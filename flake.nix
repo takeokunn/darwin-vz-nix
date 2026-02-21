@@ -52,7 +52,10 @@
       };
 
       # nix-darwin module
-      darwinModules.default = import ./nix/darwin-module.nix;
+      darwinModules.default = {
+        imports = [ ./nix/darwin-module.nix ];
+        config.services.darwin-vz.package = nixpkgs.lib.mkDefault darwinVzNix;
+      };
 
       # Checks (built by `nix flake check` on aarch64-linux CI)
       checks.${linuxSystem} = {

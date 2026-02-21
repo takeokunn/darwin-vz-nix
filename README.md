@@ -35,24 +35,21 @@ When using the nix-darwin module, these artifacts are automatically resolved via
 ### CLI Usage
 
 ```bash
-# Build the CLI
-nix build .#darwin-vz-nix
-
 # Start a VM
-darwin-vz-nix start \
+nix run .#darwin-vz-nix -- start \
   --kernel ./result/Image \
   --initrd ./result-initrd/initrd
 
 # Check VM status
-darwin-vz-nix status
-darwin-vz-nix status --json
+nix run .#darwin-vz-nix -- status
+nix run .#darwin-vz-nix -- status --json
 
 # Connect via SSH
-darwin-vz-nix ssh
+nix run .#darwin-vz-nix -- ssh
 
 # Stop the VM
-darwin-vz-nix stop
-darwin-vz-nix stop --force
+nix run .#darwin-vz-nix -- stop
+nix run .#darwin-vz-nix -- stop --force
 ```
 
 ### CLI Options
@@ -68,8 +65,9 @@ darwin-vz-nix start [OPTIONS]
   --idle-timeout N   Idle timeout in minutes (0 = disabled, default: 0)
   --rosetta/--no-rosetta    Enable/disable Rosetta 2 (default: enabled)
   --share-nix-store/--no-share-nix-store  Share /nix/store (default: enabled)
+  --verbose          Show VM console output on stderr
 
-darwin-vz-nix ssh [-- ARGS...]
+darwin-vz-nix ssh [ARGS...]
 
 darwin-vz-nix stop [OPTIONS]
   --force            Force stop without graceful shutdown
@@ -121,11 +119,12 @@ This will:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enable` | bool | `false` | Enable darwin-vz-nix VM manager |
+| `package` | package | `darwin-vz-nix` | The darwin-vz-nix package to use |
 | `cores` | positive int | `4` | Number of CPU cores |
 | `memory` | positive int | `8192` | Memory size in MB |
 | `diskSize` | string | `"100G"` | Disk size (e.g. `"100G"`, `"50G"`) |
 | `rosetta` | bool | `true` | Enable Rosetta 2 for x86_64-linux |
-| `idleTimeout` | positive int | `180` | Idle timeout in minutes |
+| `idleTimeout` | unsigned int | `180` | Idle timeout in minutes (0 = disabled) |
 | `kernelPath` | string | *(required)* | Path to guest kernel image |
 | `initrdPath` | string | *(required)* | Path to guest initrd |
 | `systemPath` | string | *(required)* | Path to guest system toplevel |
@@ -199,8 +198,14 @@ nix develop
 # Build
 swift build
 
-# Run
+# Run (dev shell)
 swift run darwin-vz-nix --help
+
+# Run (without dev shell)
+nix run .#darwin-vz-nix -- --help
+
+# Build Nix package
+nix build .#darwin-vz-nix
 
 # Format Nix files
 nix fmt  # nixfmt-tree
