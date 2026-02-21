@@ -8,7 +8,7 @@ struct VMStatusOutput: Codable {
 }
 
 enum Constants {
-    static let defaultSSHPort: UInt16 = 31122
+    static let defaultSSHPort: UInt16 = 22
 }
 
 @main
@@ -110,6 +110,16 @@ extension DarwinVZNix {
             fputs("Starting NixOS VM (cores: \(cores), memory: \(memory)MB, disk: \(diskSize))...\n", stderr)
 
             try await vmManager.start()
+
+            // Discover guest IP via DHCP lease polling
+            fputs("Waiting for guest IP address...\n", stderr)
+            do {
+                let guestIP = try networkManager.discoverGuestIP()
+                try networkManager.writeGuestIP(guestIP)
+                fputs("Guest IP: \(guestIP)\n", stderr)
+            } catch {
+                fputs("Warning: Could not discover guest IP: \(error.localizedDescription)\n", stderr)
+            }
 
             fputs("VM is running. Press Ctrl+C to stop.\n", stderr)
 
@@ -217,9 +227,6 @@ extension DarwinVZNix {
             abstract: "Connect to the virtual machine via SSH"
         )
 
-        @Option(name: .long, help: "SSH port (default: \(Constants.defaultSSHPort))")
-        var port: UInt16 = Constants.defaultSSHPort
-
         @Argument(help: "Additional arguments to pass to ssh")
         var extraArgs: [String] = []
 
@@ -234,7 +241,7 @@ extension DarwinVZNix {
             }
 
             let networkManager = NetworkManager(stateDirectory: stateDirectory)
-            try networkManager.connectSSH(port: port, extraArgs: extraArgs)
+            try networkManager.connectSSH(extraArgs: extraArgs)
         }
     }
 }

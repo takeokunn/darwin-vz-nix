@@ -94,6 +94,14 @@ struct VMConfig {
         stateDirectory.appendingPathComponent("console.log")
     }
 
+    var guestIPFileURL: URL {
+        stateDirectory.appendingPathComponent("guest-ip")
+    }
+
+    // Deterministic locally-administered MAC address for the VM.
+    // "02" = locally administered + unicast; "da:72:56" = mnemonic for "darVZ".
+    static let macAddressString = "02:da:72:56:00:01"
+
     // MARK: - Validation
 
     func validate() throws {

@@ -50,12 +50,6 @@ in
       description = "Idle timeout in minutes before VM is stopped.";
     };
 
-    sshPort = lib.mkOption {
-      type = lib.types.port;
-      default = 31122;
-      description = "SSH port for connecting to the VM.";
-    };
-
     ephemeral = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -143,13 +137,14 @@ in
     nix.distributedBuilds = true;
     nix.settings.builders-use-substitutes = true;
 
-    # SSH config for easy connection
+    # SSH config for easy connection.
+    # Guest IP is discovered dynamically via DHCP lease and saved to guest-ip file.
+    # ProxyCommand reads the IP at connection time and forwards via nc.
     environment.etc."ssh/ssh_config.d/200-darwin-vz-nix.conf" = {
       text = ''
         Host darwin-vz-nix
           User builder
-          HostName localhost
-          Port ${toString cfg.sshPort}
+          ProxyCommand /bin/sh -c 'exec /usr/bin/nc "$(cat ${cfg.workingDirectory}/guest-ip)" 22'
           IdentityFile ${cfg.workingDirectory}/ssh/id_ed25519
           StrictHostKeyChecking accept-new
           UserKnownHostsFile ${cfg.workingDirectory}/ssh/known_hosts

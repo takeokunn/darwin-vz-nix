@@ -4,6 +4,7 @@ enum NetworkError: LocalizedError {
     case sshKeyGenerationFailed(Int32)
     case sshConnectionFailed(Int32)
     case sshKeyNotFound(String)
+    case guestIPNotFound
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,8 @@ enum NetworkError: LocalizedError {
             return "SSH connection failed with exit code: \(status)"
         case .sshKeyNotFound(let path):
             return "SSH key not found at: \(path)"
+        case .guestIPNotFound:
+            return "Could not discover guest VM IP address. Is the VM running?"
         }
     }
 }
@@ -65,10 +68,83 @@ struct NetworkManager {
         }
     }
 
-    func connectSSH(port: UInt16 = 31122, extraArgs: [String] = []) throws {
+    // MARK: - Guest IP Discovery
+
+    /// Discover guest VM IP by polling /var/db/dhcpd_leases for the guest hostname.
+    /// macOS's vmnet DHCP server writes lease entries with the hostname reported by the guest.
+    func discoverGuestIP(hostname: String = "darwin-vz-guest", timeout: TimeInterval = 120) throws -> String {
+        let leaseFile = "/var/db/dhcpd_leases"
+        let pollInterval: useconds_t = 500_000 // 500ms
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if let ip = parseLeaseFile(path: leaseFile, hostname: hostname) {
+                return ip
+            }
+            usleep(pollInterval)
+        }
+
+        throw NetworkError.guestIPNotFound
+    }
+
+    /// Parse macOS DHCP lease file for a matching hostname.
+    /// Format: { name=<hostname> ip_address=<ip> ... } blocks separated by }
+    private func parseLeaseFile(path: String, hostname: String) -> String? {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return nil
+        }
+
+        // Split into lease blocks
+        let blocks = content.components(separatedBy: "}")
+        for block in blocks {
+            let lines = block.components(separatedBy: "\n")
+            var name: String?
+            var ipAddress: String?
+
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("name=") {
+                    name = String(trimmed.dropFirst("name=".count))
+                } else if trimmed.hasPrefix("ip_address=") {
+                    ipAddress = String(trimmed.dropFirst("ip_address=".count))
+                }
+            }
+
+            if name == hostname, let ip = ipAddress {
+                return ip
+            }
+        }
+
+        return nil
+    }
+
+    /// Read previously saved guest IP from the state directory.
+    func readGuestIP() throws -> String {
+        let guestIPFileURL = stateDirectory.appendingPathComponent("guest-ip")
+        guard let content = try? String(contentsOf: guestIPFileURL, encoding: .utf8) else {
+            throw NetworkError.guestIPNotFound
+        }
+        let ip = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ip.isEmpty else {
+            throw NetworkError.guestIPNotFound
+        }
+        return ip
+    }
+
+    /// Save guest IP to the state directory.
+    func writeGuestIP(_ ip: String) throws {
+        let guestIPFileURL = stateDirectory.appendingPathComponent("guest-ip")
+        try ip.write(to: guestIPFileURL, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - SSH Connection
+
+    func connectSSH(extraArgs: [String] = []) throws {
         guard FileManager.default.fileExists(atPath: sshKeyPath.path) else {
             throw NetworkError.sshKeyNotFound(sshKeyPath.path)
         }
+
+        let guestIP = try readGuestIP()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -77,8 +153,7 @@ struct NetworkManager {
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "UserKnownHostsFile=\(stateDirectory.appendingPathComponent("ssh/known_hosts").path)",
             "-o", "LogLevel=ERROR",
-            "-p", String(port),
-            "builder@localhost",
+            "builder@\(guestIP)",
         ] + extraArgs
         process.standardInput = FileHandle.standardInput
         process.standardOutput = FileHandle.standardOutput

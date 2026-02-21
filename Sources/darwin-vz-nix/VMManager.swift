@@ -87,9 +87,12 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         let blockDevice = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
         vmConfig.storageDevices = [blockDevice]
 
-        // Network (NAT)
+        // Network (NAT) with deterministic MAC for DHCP lease discovery
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         networkDevice.attachment = VZNATNetworkDeviceAttachment()
+        if let mac = VZMACAddress(string: VMConfig.macAddressString) {
+            networkDevice.macAddress = mac
+        }
         vmConfig.networkDevices = [networkDevice]
 
         // Entropy
@@ -250,9 +253,19 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     }
 
     private func checkActivity() -> Bool {
+        // Read the guest IP to check for active SSH connections
+        guard let guestIP = try? String(
+            contentsOf: config.guestIPFileURL,
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines),
+              !guestIP.isEmpty
+        else {
+            return false
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
-        process.arguments = ["-i", ":\(Constants.defaultSSHPort)", "-n", "-P"]
+        process.arguments = ["-i", "@\(guestIP):22", "-n", "-P"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
