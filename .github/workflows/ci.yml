@@ -1,59 +1,33 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+  push:
+    branches:
+      - main
 
 jobs:
-  swift-build:
-    name: Swift Build
-    runs-on: macos-14  # Apple Silicon runner
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build (Debug)
-        run: swift build
-
-      - name: Build (Release)
-        run: swift build -c release
-
   nix-check:
     name: Nix Flake Check
-    runs-on: macos-14
+    runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Nix Flake Check
-        run: nix flake check --no-build
-        # --no-build because we can't build aarch64-linux on CI
-        # and the swift package needs network access for SwiftPM deps
+        run: nix flake check --print-build-logs
 
-      - name: Check flake outputs
+      - name: Show flake outputs
         run: nix flake show
 
-  build-guest:
-    name: Build NixOS Guest Artifacts
-    runs-on: ubuntu-24.04-arm  # Native ARM64 runner (free for public repos)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v15
-        with:
-          name: takeokunn-darwin-vz-nix
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
-
-      - name: Build guest kernel
-        run: nix build .#packages.aarch64-linux.guest-kernel --no-link --print-out-paths
-
-      - name: Build guest initrd
-        run: nix build .#packages.aarch64-linux.guest-initrd --no-link --print-out-paths
+      - name: Push to Cachix
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          nix build .#checks.aarch64-linux.guest-kernel -o result-kernel
+          nix build .#checks.aarch64-linux.guest-initrd -o result-initrd
+          cachix push takeokunn-darwin-vz-nix result-kernel
+          cachix push takeokunn-darwin-vz-nix result-initrd

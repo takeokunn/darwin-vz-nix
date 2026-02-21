@@ -57,12 +57,22 @@
       # nix-darwin module
       darwinModules.default = import ./nix/darwin-module.nix;
 
+      # Checks (built by `nix flake check` on aarch64-linux CI)
+      checks.${linuxSystem} = {
+        guest-kernel = self.packages.${linuxSystem}.guest-kernel;
+        guest-initrd = self.packages.${linuxSystem}.guest-initrd;
+      };
+
+      # Formatter
+      formatter.${system} = pkgs.nixfmt-tree;
+
       # Dev shell for Swift development
       devShells.${system}.default = pkgs.mkShell {
         nativeBuildInputs = with pkgs; [
           swift
           swiftpm
           swiftformat
+          sourcekit-lsp
         ];
       };
     };
