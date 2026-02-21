@@ -43,6 +43,9 @@ extension DarwinVZNix {
         @Option(name: .long, help: "Path to initrd image")
         var initrd: String
 
+        @Option(name: .long, help: "Path to NixOS system toplevel (passed as init= kernel parameter)")
+        var system: String?
+
         @Flag(name: .long, inversion: .prefixedNo, help: "Enable Rosetta 2 for x86_64 support (default: true)")
         var rosetta: Bool = true
 
@@ -59,6 +62,7 @@ extension DarwinVZNix {
                 diskSize: diskSize,
                 kernelURL: URL(fileURLWithPath: kernel),
                 initrdURL: URL(fileURLWithPath: initrd),
+                systemURL: system.map { URL(fileURLWithPath: $0) },
                 rosetta: rosetta,
                 shareNixStore: shareNixStore,
                 idleTimeout: idleTimeout
@@ -109,7 +113,12 @@ extension DarwinVZNix {
 
             fputs("VM is running. Press Ctrl+C to stop.\n", stderr)
 
-            dispatchMain()
+            // Suspend this async task indefinitely. The VM runs on its own queue,
+            // and lifecycle is managed by signal handlers (SIGINT/SIGTERM) and
+            // VZVirtualMachineDelegate callbacks, which call exit().
+            // We cannot use dispatchMain() here because AsyncParsableCommand.run()
+            // executes on the cooperative thread pool, not the main thread.
+            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
         }
     }
 }

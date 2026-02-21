@@ -18,46 +18,50 @@ let
   };
 
   # workspace-state.json for SwiftPM (version 6 for nixpkgs Swift 5.10 compatibility)
-  workspaceStateFile = builtins.toFile "workspace-state.json" (builtins.toJSON {
-    version = 6;
-    object = {
-      artifacts = [ ];
-      dependencies = [
-        {
-          basedOn = null;
-          packageRef = {
-            identity = "swift-argument-parser";
-            kind = "remoteSourceControl";
-            location = "https://github.com/apple/swift-argument-parser.git";
-            name = "swift-argument-parser";
-          };
-          state = {
-            checkoutState = {
-              revision = "41982a3656a71c768319979febd796c6fd111d5c";
-              version = "1.5.0";
+  workspaceStateFile = builtins.toFile "workspace-state.json" (
+    builtins.toJSON {
+      version = 6;
+      object = {
+        artifacts = [ ];
+        dependencies = [
+          {
+            basedOn = null;
+            packageRef = {
+              identity = "swift-argument-parser";
+              kind = "remoteSourceControl";
+              location = "https://github.com/apple/swift-argument-parser.git";
+              name = "swift-argument-parser";
             };
-            name = "sourceControlCheckout";
-          };
-          subpath = "swift-argument-parser";
-        }
-      ];
-    };
-  });
+            state = {
+              checkoutState = {
+                revision = "41982a3656a71c768319979febd796c6fd111d5c";
+                version = "1.5.0";
+              };
+              name = "sourceControlCheckout";
+            };
+            subpath = "swift-argument-parser";
+          }
+        ];
+      };
+    }
+  );
 
   # Package.resolved (version 1 for SwiftPM compatibility)
-  pinFile = builtins.toFile "Package.resolved" (builtins.toJSON {
-    version = 1;
-    object.pins = [
-      {
-        package = "swift-argument-parser";
-        repositoryURL = "https://github.com/apple/swift-argument-parser.git";
-        state = {
-          revision = "41982a3656a71c768319979febd796c6fd111d5c";
-          version = "1.5.0";
-        };
-      }
-    ];
-  });
+  pinFile = builtins.toFile "Package.resolved" (
+    builtins.toJSON {
+      version = 1;
+      object.pins = [
+        {
+          package = "swift-argument-parser";
+          repositoryURL = "https://github.com/apple/swift-argument-parser.git";
+          state = {
+            revision = "41982a3656a71c768319979febd796c6fd111d5c";
+            version = "1.5.0";
+          };
+        }
+      ];
+    }
+  );
 in
 
 stdenv.mkDerivation {

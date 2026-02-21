@@ -52,7 +52,11 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         // Boot loader
         let bootLoader = VZLinuxBootLoader(kernelURL: config.kernelURL)
         bootLoader.initialRamdiskURL = config.initrdURL
-        bootLoader.commandLine = "console=hvc0 root=/dev/vda"
+        var cmdline = "console=hvc0 root=/dev/vda"
+        if let systemURL = config.systemURL {
+            cmdline += " init=\(systemURL.path)/init"
+        }
+        bootLoader.commandLine = cmdline
         vmConfig.bootLoader = bootLoader
 
         // CPU & Memory
@@ -91,10 +95,21 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         // Entropy
         vmConfig.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 
-        // Serial console (stdin/stdout)
+        // Serial console — write to console.log file and optionally read from stdin
+        FileManager.default.createFile(atPath: config.consoleLogURL.path, contents: nil)
+        let consoleWriteHandle = try FileHandle(forWritingTo: config.consoleLogURL)
+
+        // Use /dev/null for input when stdin is not a TTY (e.g. backgrounded process)
+        let consoleReadHandle: FileHandle
+        if isatty(STDIN_FILENO) != 0 {
+            consoleReadHandle = FileHandle.standardInput
+        } else {
+            consoleReadHandle = FileHandle(forReadingAtPath: "/dev/null")!
+        }
+
         let serialPortAttachment = VZFileHandleSerialPortAttachment(
-            fileHandleForReading: FileHandle.standardInput,
-            fileHandleForWriting: FileHandle.standardOutput
+            fileHandleForReading: consoleReadHandle,
+            fileHandleForWriting: consoleWriteHandle
         )
         let serialPortConfig = VZVirtioConsoleDeviceSerialPortConfiguration()
         serialPortConfig.attachment = serialPortAttachment
@@ -149,7 +164,21 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
         try writePIDFile()
 
-        try await vm.start()
+        // VZVirtualMachine requires all operations on the queue specified in init.
+        // Swift async/await runs on the cooperative thread pool, which is NOT the VM's queue.
+        // We must dispatch start() to the VM's DispatchQueue explicitly.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                vm.start { result in
+                    switch result {
+                    case .success:
+                        continuation.resume()
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
 
         if idleTimeoutMinutes > 0 {
             startIdleMonitoring()
@@ -165,12 +194,23 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         idleCheckTimer = nil
 
         if force {
-            try await vm.stop()
-        } else {
-            do {
-                try vm.requestStop()
-            } catch {
-                try await vm.stop()
+            // Force stop: clean up and let the caller exit the process.
+            // The VM runs in-process, so process exit terminates it immediately.
+            self.virtualMachine = nil
+            removePIDFile()
+            return
+        }
+
+        // Graceful: send ACPI power button request to the guest OS.
+        // VZVirtualMachine requires all operations on the VM's queue.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do {
+                    try vm.requestStop()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
 

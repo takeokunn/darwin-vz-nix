@@ -46,12 +46,9 @@
 
       # Guest artifacts (kernel + initrd) as packages
       packages.${linuxSystem} = {
-        guest-kernel =
-          self.nixosConfigurations.darwin-vz-guest.config.system.build.kernel;
-        guest-initrd =
-          self.nixosConfigurations.darwin-vz-guest.config.system.build.initialRamdisk;
-        guest-system =
-          self.nixosConfigurations.darwin-vz-guest.config.system.build.toplevel;
+        guest-kernel = self.nixosConfigurations.darwin-vz-guest.config.system.build.kernel;
+        guest-initrd = self.nixosConfigurations.darwin-vz-guest.config.system.build.initialRamdisk;
+        guest-system = self.nixosConfigurations.darwin-vz-guest.config.system.build.toplevel;
       };
 
       # nix-darwin module
@@ -61,6 +58,7 @@
       checks.${linuxSystem} = {
         guest-kernel = self.packages.${linuxSystem}.guest-kernel;
         guest-initrd = self.packages.${linuxSystem}.guest-initrd;
+        guest-system = self.packages.${linuxSystem}.guest-system;
       };
 
       # Formatter

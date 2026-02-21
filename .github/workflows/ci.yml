@@ -29,5 +29,7 @@ jobs:
         run: |
           nix build .#checks.aarch64-linux.guest-kernel -o result-kernel
           nix build .#checks.aarch64-linux.guest-initrd -o result-initrd
+          nix build .#checks.aarch64-linux.guest-system -o result-system
           cachix push takeokunn-darwin-vz-nix result-kernel
           cachix push takeokunn-darwin-vz-nix result-initrd
+          cachix push takeokunn-darwin-vz-nix result-system

@@ -32,6 +32,7 @@ struct VMConfig {
     let diskSize: String
     let kernelURL: URL
     let initrdURL: URL
+    let systemURL: URL?
     let stateDirectory: URL
     let rosetta: Bool
     let shareNixStore: Bool
@@ -51,6 +52,7 @@ struct VMConfig {
         diskSize: String = "100G",
         kernelURL: URL,
         initrdURL: URL,
+        systemURL: URL? = nil,
         stateDirectory: URL? = nil,
         rosetta: Bool = true,
         shareNixStore: Bool = true,
@@ -61,6 +63,7 @@ struct VMConfig {
         self.diskSize = diskSize
         self.kernelURL = kernelURL
         self.initrdURL = initrdURL
+        self.systemURL = systemURL
         self.stateDirectory = stateDirectory ?? VMConfig.defaultStateDirectory
         self.rosetta = rosetta
         self.shareNixStore = shareNixStore

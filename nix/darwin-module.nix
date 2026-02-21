@@ -14,7 +14,9 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.darwin-vz-nix or (throw "darwin-vz-nix package not found. Add the overlay or use packages.default from the flake.");
+      default =
+        pkgs.darwin-vz-nix
+          or (throw "darwin-vz-nix package not found. Add the overlay or use packages.default from the flake.");
       description = "The darwin-vz-nix package to use.";
     };
 
@@ -74,6 +76,11 @@ in
     initrdPath = lib.mkOption {
       type = lib.types.str;
       description = "Path to the NixOS guest initrd.";
+    };
+
+    systemPath = lib.mkOption {
+      type = lib.types.str;
+      description = "Path to the NixOS guest system toplevel (used as init= kernel parameter).";
     };
 
     maxJobs = lib.mkOption {
@@ -153,26 +160,27 @@ in
     launchd.daemons.darwin-vz-nix = {
       serviceConfig = {
         Label = "org.nixos.darwin-vz-nix";
-        ProgramArguments =
-          [
-            "${cfg.package}/bin/darwin-vz-nix"
-            "start"
-            "--cores"
-            (toString cfg.cores)
-            "--memory"
-            (toString cfg.memory)
-            "--disk-size"
-            cfg.diskSize
-            "--kernel"
-            cfg.kernelPath
-            "--initrd"
-            cfg.initrdPath
-          ]
-          ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
-          ++ lib.optionals (cfg.idleTimeout > 0) [
-            "--idle-timeout"
-            (toString cfg.idleTimeout)
-          ];
+        ProgramArguments = [
+          "${cfg.package}/bin/darwin-vz-nix"
+          "start"
+          "--cores"
+          (toString cfg.cores)
+          "--memory"
+          (toString cfg.memory)
+          "--disk-size"
+          cfg.diskSize
+          "--kernel"
+          cfg.kernelPath
+          "--initrd"
+          cfg.initrdPath
+          "--system"
+          cfg.systemPath
+        ]
+        ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
+        ++ lib.optionals (cfg.idleTimeout > 0) [
+          "--idle-timeout"
+          (toString cfg.idleTimeout)
+        ];
         KeepAlive = true;
         RunAtLoad = true;
         WorkingDirectory = cfg.workingDirectory;

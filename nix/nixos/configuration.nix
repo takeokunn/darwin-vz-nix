@@ -32,8 +32,9 @@
   ];
 
   # Extra utilities needed in initrd for first-boot disk formatting
+  # Use mke2fs directly (mkfs.ext4 is a symlink that copy_bin_and_libs may not handle)
   boot.initrd.extraUtilsCommands = ''
-    copy_bin_and_libs ${pkgs.e2fsprogs}/bin/mkfs.ext4
+    copy_bin_and_libs ${pkgs.e2fsprogs}/bin/mke2fs
     copy_bin_and_libs ${pkgs.util-linux}/bin/blkid
   '';
 
@@ -41,7 +42,7 @@
   boot.initrd.postDeviceCommands = lib.mkBefore ''
     if ! blkid /dev/vda &>/dev/null; then
       echo "First boot: formatting /dev/vda as ext4..."
-      mkfs.ext4 -L root /dev/vda
+      mke2fs -t ext4 -L root /dev/vda
     fi
   '';
 
