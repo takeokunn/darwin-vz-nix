@@ -121,6 +121,26 @@
           pkgs.swiftformat
           pkgs.nixfmt
         ];
+        shellHook = ''
+          echo "darwin-vz-nix development shell"
+          echo "  swift: $(swift --version 2>&1 | head -1)"
+          echo "  swiftformat: $(swiftformat --version)"
+          echo ""
+          echo "Commands:"
+          echo "  swift build                Build Swift project"
+          echo "  swift test                 Run Swift tests"
+          echo "  nix build                  Build darwin-vz-nix package"
+          echo "  nix flake check            Run all checks (tests + formatting)"
+          echo "  nix fmt                    Format Nix files"
+          echo ""
+          echo "Quick start (run a NixOS VM):"
+          echo "  nix build .#packages.aarch64-linux.guest-kernel -o result-kernel --max-jobs 0 --option extra-platforms aarch64-linux --option always-allow-substitutes true"
+          echo "  nix build .#packages.aarch64-linux.guest-initrd -o result-initrd --max-jobs 0 --option extra-platforms aarch64-linux --option always-allow-substitutes true"
+          echo "  nix build .#packages.aarch64-linux.guest-system -o result-system --max-jobs 0 --option extra-platforms aarch64-linux --option always-allow-substitutes true"
+          echo "  nix run .#darwin-vz-nix -- start --kernel ./result-kernel/Image --initrd ./result-initrd/initrd --system ./result-system"
+          echo "  nix run .#darwin-vz-nix -- ssh"
+          echo "  nix run .#darwin-vz-nix -- stop"
+        '';
       };
     };
 }
