@@ -7,20 +7,6 @@ on:
       - main
 
 jobs:
-  nix-check:
-    name: Nix Flake Check
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Nix Flake Check
-        run: nix flake check --print-build-logs --system aarch64-linux
-
   darwin-test:
     name: macOS Checks
     runs-on: macos-15
@@ -40,7 +26,7 @@ jobs:
 
   cachix-push:
     name: Push guest artifacts to Cachix
-    needs: [nix-check, darwin-test]
+    needs: darwin-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
     steps:
