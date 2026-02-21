@@ -1,23 +1,14 @@
 {
   lib,
   stdenv,
-  swift,
-  swiftpm,
   darwin,
-  fetchgit,
+  swift-bin,
+  swift-argument-parser-src,
+  swift-testing-src,
+  swift-syntax-src,
 }:
 
 let
-  # Pin to 1.5.0 for Swift 5.10 compatibility (nixpkgs ships Swift 5.10.1)
-  # swift-argument-parser 1.6+ requires Swift 6.0 features (AccessLevelOnImport)
-  swift-argument-parser = fetchgit {
-    url = "https://github.com/apple/swift-argument-parser.git";
-    rev = "41982a3656a71c768319979febd796c6fd111d5c"; # 1.5.0
-    hash = "sha256-TRaJG8ikzuQQjH3ERfuYNKPty3qI3ziC/9v96pvlvRs=";
-    fetchSubmodules = true;
-  };
-
-  # workspace-state.json for SwiftPM (version 6 for nixpkgs Swift 5.10 compatibility)
   workspaceStateFile = builtins.toFile "workspace-state.json" (
     builtins.toJSON {
       version = 6;
@@ -34,32 +25,49 @@ let
             };
             state = {
               checkoutState = {
-                revision = "41982a3656a71c768319979febd796c6fd111d5c";
-                version = "1.5.0";
+                revision = "011f0c765fb46d9cac61bca19be0527e99c98c8b";
+                version = "1.5.1";
               };
               name = "sourceControlCheckout";
             };
             subpath = "swift-argument-parser";
           }
+          {
+            basedOn = null;
+            packageRef = {
+              identity = "swift-testing";
+              kind = "remoteSourceControl";
+              location = "https://github.com/apple/swift-testing.git";
+              name = "swift-testing";
+            };
+            state = {
+              checkoutState = {
+                revision = "399f76dcd91e4c688ca2301fa24a8cc6d9927211";
+                version = "0.99.0";
+              };
+              name = "sourceControlCheckout";
+            };
+            subpath = "swift-testing";
+          }
+          {
+            basedOn = null;
+            packageRef = {
+              identity = "swift-syntax";
+              kind = "remoteSourceControl";
+              location = "https://github.com/swiftlang/swift-syntax.git";
+              name = "swift-syntax";
+            };
+            state = {
+              checkoutState = {
+                revision = "0687f71944021d616d34d922343dcef086855920";
+                version = "600.0.1";
+              };
+              name = "sourceControlCheckout";
+            };
+            subpath = "swift-syntax";
+          }
         ];
       };
-    }
-  );
-
-  # Package.resolved (version 1 for SwiftPM compatibility)
-  pinFile = builtins.toFile "Package.resolved" (
-    builtins.toJSON {
-      version = 1;
-      object.pins = [
-        {
-          package = "swift-argument-parser";
-          repositoryURL = "https://github.com/apple/swift-argument-parser.git";
-          state = {
-            revision = "41982a3656a71c768319979febd796c6fd111d5c";
-            version = "1.5.0";
-          };
-        }
-      ];
     }
   );
 in
@@ -71,7 +79,7 @@ stdenv.mkDerivation {
   src = lib.cleanSourceWith {
     src = ./..;
     filter =
-      path: type:
+      path: _type:
       let
         baseName = builtins.baseNameOf path;
       in
@@ -85,8 +93,7 @@ stdenv.mkDerivation {
   };
 
   nativeBuildInputs = [
-    swift
-    swiftpm
+    swift-bin
     darwin.sigtool
   ];
 
@@ -94,9 +101,10 @@ stdenv.mkDerivation {
     runHook preConfigure
 
     mkdir -p .build/checkouts
-    ln -sf ${pinFile} ./Package.resolved
     install -m 0600 ${workspaceStateFile} ./.build/workspace-state.json
-    ln -s '${swift-argument-parser}' '.build/checkouts/swift-argument-parser'
+    ln -s '${swift-argument-parser-src}' '.build/checkouts/swift-argument-parser'
+    ln -s '${swift-testing-src}' '.build/checkouts/swift-testing'
+    ln -s '${swift-syntax-src}' '.build/checkouts/swift-syntax'
 
     runHook postConfigure
   '';
@@ -105,7 +113,7 @@ stdenv.mkDerivation {
     runHook preBuild
 
     export HOME=$TMPDIR
-    swift build -c release --disable-sandbox --skip-update
+    swift build -c release --disable-sandbox
 
     runHook postBuild
   '';
@@ -113,9 +121,8 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    binPath="$(swiftpmBinPath)"
     mkdir -p $out/bin
-    cp $binPath/darwin-vz-nix $out/bin/
+    cp .build/release/darwin-vz-nix $out/bin/
 
     runHook postInstall
   '';
@@ -128,10 +135,10 @@ stdenv.mkDerivation {
       $out/bin/darwin-vz-nix
   '';
 
-  meta = with lib; {
+  meta = {
     description = "NixOS VM manager using macOS Virtualization.framework";
     homepage = "https://github.com/takeokunn/darwin-vz-nix";
-    license = licenses.mit;
+    license = lib.licenses.mit;
     platforms = [ "aarch64-darwin" ];
     mainProgram = "darwin-vz-nix";
   };

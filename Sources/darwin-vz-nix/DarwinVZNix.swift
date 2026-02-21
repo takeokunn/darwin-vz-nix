@@ -1,4 +1,5 @@
 import ArgumentParser
+import DarwinVZNixLib
 
 @main
 struct DarwinVZNix: AsyncParsableCommand {

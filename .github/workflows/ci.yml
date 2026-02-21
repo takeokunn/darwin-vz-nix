@@ -19,10 +19,7 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Nix Flake Check
-        run: nix flake check --print-build-logs
-
-      - name: Show flake outputs
-        run: nix flake show
+        run: nix flake check --print-build-logs --system aarch64-linux
 
   darwin-test:
     name: macOS Checks
@@ -30,11 +27,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Swift Tests
-        run: swift test
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-  cachix-push-kernel:
-    name: Push guest-kernel to Cachix
+      - name: Nix Flake Check (Darwin)
+        run: nix flake check --print-build-logs --system aarch64-darwin
+
+      - name: Nix Build
+        run: nix build .#darwin-vz-nix --print-build-logs
+
+  cachix-push:
+    name: Push guest artifacts to Cachix
     needs: [nix-check, darwin-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
@@ -46,46 +51,17 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Build guest-kernel
-        run: nix build .#checks.aarch64-linux.guest-kernel -o result
+      - name: Build and push guest-kernel
+        run: |
+          nix build .#checks.aarch64-linux.guest-kernel -o result-guest-kernel
+          cachix push takeokunn-darwin-vz-nix result-guest-kernel
 
-      - name: Push to Cachix
-        run: cachix push takeokunn-darwin-vz-nix result
+      - name: Build and push guest-initrd
+        run: |
+          nix build .#checks.aarch64-linux.guest-initrd -o result-guest-initrd
+          cachix push takeokunn-darwin-vz-nix result-guest-initrd
 
-  cachix-push-initrd:
-    name: Push guest-initrd to Cachix
-    needs: [nix-check, darwin-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build guest-initrd
-        run: nix build .#checks.aarch64-linux.guest-initrd -o result
-
-      - name: Push to Cachix
-        run: cachix push takeokunn-darwin-vz-nix result
-
-  cachix-push-system:
-    name: Push guest-system to Cachix
-    needs: [nix-check, darwin-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build guest-system
-        run: nix build .#checks.aarch64-linux.guest-system -o result
-
-      - name: Push to Cachix
-        run: cachix push takeokunn-darwin-vz-nix result
+      - name: Build and push guest-system
+        run: |
+          nix build .#checks.aarch64-linux.guest-system -o result-guest-system
+          cachix push takeokunn-darwin-vz-nix result-guest-system

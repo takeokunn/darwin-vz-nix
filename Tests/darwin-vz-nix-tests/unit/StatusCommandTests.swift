@@ -1,5 +1,5 @@
 import ArgumentParser
-@testable import darwin_vz_nix
+@testable import DarwinVZNixLib
 import Foundation
 import Testing
 
@@ -42,13 +42,13 @@ struct StatusCommandTests {
 
     @Test("default parsing sets json to false")
     func defaultJsonIsFalse() throws {
-        let cmd = try DarwinVZNix.Status.parse([])
+        let cmd = try Status.parse([])
         #expect(cmd.json == false)
     }
 
     @Test("parsing with --json sets json to true")
     func jsonFlag() throws {
-        let cmd = try DarwinVZNix.Status.parse(["--json"])
+        let cmd = try Status.parse(["--json"])
         #expect(cmd.json == true)
     }
 }

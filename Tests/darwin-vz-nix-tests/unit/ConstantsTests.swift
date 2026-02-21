@@ -1,4 +1,4 @@
-@testable import darwin_vz_nix
+@testable import DarwinVZNixLib
 import Foundation
 import Testing
 

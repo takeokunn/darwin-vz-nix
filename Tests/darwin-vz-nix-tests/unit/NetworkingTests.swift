@@ -1,4 +1,4 @@
-@testable import darwin_vz_nix
+@testable import DarwinVZNixLib
 import Testing
 
 @Suite("Networking", .tags(.unit))

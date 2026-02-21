@@ -1,12 +1,12 @@
 import ArgumentParser
-@testable import darwin_vz_nix
+@testable import DarwinVZNixLib
 import Testing
 
 @Suite("StartCommand", .tags(.unit))
 struct StartCommandTests {
     @Test("default argument values are correct when only required options provided")
     func defaultValues() throws {
-        let cmd = try DarwinVZNix.Start.parse(["--kernel", "/tmp/k", "--initrd", "/tmp/i"])
+        let cmd = try Start.parse(["--kernel", "/tmp/k", "--initrd", "/tmp/i"])
         #expect(cmd.cores == 4)
         #expect(cmd.memory == 8192)
         #expect(cmd.diskSize == "100G")
@@ -18,6 +18,6 @@ struct StartCommandTests {
 
     @Test("configuration abstract is non-empty")
     func abstractIsNonEmpty() {
-        #expect(!DarwinVZNix.Start.configuration.abstract.isEmpty)
+        #expect(!Start.configuration.abstract.isEmpty)
     }
 }

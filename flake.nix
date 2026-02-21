@@ -12,6 +12,10 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     # For NixOS guest image building
     nixpkgs-linux.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nur-packages = {
+      url = "github:takeokunn/nur-packages";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -19,13 +23,21 @@
       self,
       nixpkgs,
       nixpkgs-linux,
+      nur-packages,
     }:
     let
       # Only aarch64-darwin is supported
       system = "aarch64-darwin";
+      lib = nixpkgs.lib;
       pkgs = nixpkgs.legacyPackages.${system};
+      nurPkgs = nur-packages.legacyPackages.${system};
       linuxSystem = "aarch64-linux";
-      darwinVzNix = pkgs.callPackage ./nix/package.nix { };
+      darwinVzNix = pkgs.callPackage ./nix/package.nix {
+        swift-bin = nurPkgs.swift-bin;
+        swift-argument-parser-src = nurPkgs.swift-argument-parser;
+        swift-testing-src = nurPkgs.swift-testing;
+        swift-syntax-src = nurPkgs.swift-syntax;
+      };
     in
     {
       # Swift CLI package
@@ -52,7 +64,7 @@
       # nix-darwin module
       darwinModules.default = {
         imports = [ ./nix/host/darwin-module.nix ];
-        config.services.darwin-vz.package = nixpkgs.lib.mkDefault darwinVzNix;
+        config.services.darwin-vz.package = lib.mkDefault darwinVzNix;
       };
 
       # Checks (built by `nix flake check` on aarch64-linux CI)
@@ -62,15 +74,30 @@
         guest-system = self.packages.${linuxSystem}.guest-system;
       };
 
-      # Checks for aarch64-darwin (build verification + formatting)
+      # Checks for aarch64-darwin
       checks.${system} = {
-        build = darwinVzNix;
+        swift-test = darwinVzNix.overrideAttrs (_: {
+          name = "darwin-vz-nix-test";
+          buildPhase = ''
+            runHook preBuild
+            export HOME=$TMPDIR
+            unset SDKROOT DEVELOPER_DIR
+            export SDKROOT=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
+            export NIX_ENFORCE_PURITY=0
+            swift test --disable-sandbox
+            runHook postBuild
+          '';
+          installPhase = ''
+            touch $out
+          '';
+          postFixup = "";
+        });
         formatting =
           let
-            src = nixpkgs.lib.cleanSourceWith {
+            src = lib.cleanSourceWith {
               src = ./.;
               filter =
-                path: type:
+                path: _type:
                 let
                   baseName = builtins.baseNameOf path;
                 in
@@ -85,16 +112,14 @@
       };
 
       # Formatter
-      formatter.${system} = pkgs.nixfmt-tree;
+      formatter.${system} = pkgs.nixfmt;
 
       # Dev shell for Swift development
       devShells.${system}.default = pkgs.mkShell {
-        nativeBuildInputs = with pkgs; [
-          swift
-          swiftpm
-          swiftformat
-          sourcekit-lsp
-          nixfmt-tree
+        nativeBuildInputs = [
+          nurPkgs.swift-bin
+          pkgs.swiftformat
+          pkgs.nixfmt
         ];
       };
     };

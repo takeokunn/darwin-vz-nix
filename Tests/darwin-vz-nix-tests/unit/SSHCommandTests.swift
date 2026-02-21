@@ -1,23 +1,23 @@
 import ArgumentParser
-@testable import darwin_vz_nix
+@testable import DarwinVZNixLib
 import Testing
 
 @Suite("SSHCommand", .tags(.unit))
 struct SSHCommandTests {
     @Test("default parsing sets extraArgs to empty array")
     func defaultExtraArgsEmpty() throws {
-        let cmd = try DarwinVZNix.SSH.parse([])
+        let cmd = try SSH.parse([])
         #expect(cmd.extraArgs == [])
     }
 
     @Test("passthrough arguments after -- are captured in extraArgs")
     func passthroughArgs() throws {
-        let cmd = try DarwinVZNix.SSH.parse(["--", "-v"])
+        let cmd = try SSH.parse(["--", "-v"])
         #expect(cmd.extraArgs == ["-v"])
     }
 
     @Test("configuration abstract is non-empty")
     func abstractIsNonEmpty() {
-        #expect(!DarwinVZNix.SSH.configuration.abstract.isEmpty)
+        #expect(!SSH.configuration.abstract.isEmpty)
     }
 }

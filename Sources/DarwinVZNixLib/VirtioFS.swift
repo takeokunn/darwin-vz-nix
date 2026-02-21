@@ -1,5 +1,5 @@
 import Foundation
-import Virtualization
+@preconcurrency import Virtualization
 
 enum VirtioFSError: LocalizedError {
     case rosettaNotAvailable

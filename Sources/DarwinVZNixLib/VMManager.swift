@@ -1,5 +1,5 @@
 import Foundation
-import Virtualization
+@preconcurrency import Virtualization
 
 enum VMManagerError: LocalizedError {
     case vmNotRunning
@@ -186,9 +186,10 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         // VZVirtualMachine requires all operations on the queue specified in init.
         // Swift async/await runs on the cooperative thread pool, which is NOT the VM's queue.
         // We must dispatch start() to the VM's DispatchQueue explicitly.
+        let vmRef = vm
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
-                vm.start { result in
+                vmRef.start { result in
                     switch result {
                     case .success:
                         continuation.resume()
@@ -240,10 +241,11 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
         // Graceful: send ACPI power button request to the guest OS.
         // VZVirtualMachine requires all operations on the VM's queue.
+        let vmRef = vm
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    try vm.requestStop()
+                    try vmRef.requestStop()
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
