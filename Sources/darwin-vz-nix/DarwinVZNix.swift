@@ -119,14 +119,17 @@ extension DarwinVZNix {
             }
             sigtermSource.resume()
 
+            Self.cleanStaleLockFiles()
+
             fputs("Starting NixOS VM (cores: \(cores), memory: \(memory)MB, disk: \(diskSize))...\n", stderr)
 
+            let vmStartTime = Date()
             try await vmManager.start()
 
             // Discover guest IP via DHCP lease polling
             fputs("Waiting for guest IP address...\n", stderr)
             do {
-                let guestIP = try await networkManager.discoverGuestIP()
+                let guestIP = try await networkManager.discoverGuestIP(notBefore: vmStartTime)
                 try networkManager.writeGuestIP(guestIP)
                 fputs("Guest IP: \(guestIP)\n", stderr)
             } catch {
@@ -143,6 +146,37 @@ extension DarwinVZNix {
             // Using an infinite AsyncStream avoids CheckedContinuation leak warnings.
             let stream = AsyncStream<Void> { _ in }
             for await _ in stream {}
+        }
+
+        static func cleanStaleLockFiles() {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = [
+                "-n", "find", "/nix/store",
+                "-maxdepth", "1", "-name", "*.lock",
+                "-size", "0", "-perm", "600", "-delete",
+            ]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                if process.terminationStatus == 0 {
+                    fputs("Cleaned stale lock files from /nix/store.\n", stderr)
+                } else {
+                    fputs(
+                        "Warning: Could not clean stale lock files in /nix/store. Run: sudo find /nix/store -maxdepth 1 -name '*.lock' -size 0 -perm 600 -delete\n",
+                        stderr
+                    )
+                }
+            } catch {
+                fputs(
+                    "Warning: Could not clean stale lock files in /nix/store. Run: sudo find /nix/store -maxdepth 1 -name '*.lock' -size 0 -perm 600 -delete\n",
+                    stderr
+                )
+            }
         }
     }
 }

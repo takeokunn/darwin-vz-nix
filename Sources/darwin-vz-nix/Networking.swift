@@ -72,12 +72,13 @@ struct NetworkManager {
 
     /// Discover guest VM IP by polling /var/db/dhcpd_leases for the guest hostname.
     /// macOS's vmnet DHCP server writes lease entries with the hostname reported by the guest.
-    func discoverGuestIP(hostname: String = "darwin-vz-guest", timeout: TimeInterval = 120) async throws -> String {
+    func discoverGuestIP(hostname: String = "darwin-vz-guest", timeout: TimeInterval = 120, notBefore: Date) async throws -> String {
         let leaseFile = "/var/db/dhcpd_leases"
         let deadline = Date().addingTimeInterval(timeout)
+        let notBeforeTimestamp = UInt64(notBefore.timeIntervalSince1970)
 
         while Date() < deadline {
-            if let ip = parseLeaseFile(path: leaseFile, hostname: hostname) {
+            if let ip = parseLeaseFile(path: leaseFile, hostname: hostname, notBefore: notBeforeTimestamp) {
                 return ip
             }
             try await Task.sleep(for: .milliseconds(500))
@@ -89,7 +90,7 @@ struct NetworkManager {
     /// Parse macOS DHCP lease file for a matching hostname.
     /// Format: { name=<hostname> ip_address=<ip> lease=0x<hex_timestamp> ... } blocks separated by }
     /// Returns the IP from the entry with the newest (highest) lease timestamp to avoid stale leases.
-    private func parseLeaseFile(path: String, hostname: String) -> String? {
+    private func parseLeaseFile(path: String, hostname: String, notBefore: UInt64) -> String? {
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
             return nil
         }
@@ -117,7 +118,7 @@ struct NetworkManager {
                 }
             }
 
-            if name == hostname, let ip = ipAddress, leaseTimestamp >= newestTimestamp {
+            if name == hostname, let ip = ipAddress, leaseTimestamp > notBefore, leaseTimestamp >= newestTimestamp {
                 newestTimestamp = leaseTimestamp
                 newestIP = ip
             }

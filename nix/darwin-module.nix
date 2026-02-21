@@ -7,6 +7,35 @@
 
 let
   cfg = config.services.darwin-vz;
+
+  vmArgs =
+    [
+      "${cfg.package}/bin/darwin-vz-nix"
+      "start"
+      "--cores"
+      (toString cfg.cores)
+      "--memory"
+      (toString cfg.memory)
+      "--disk-size"
+      cfg.diskSize
+      "--kernel"
+      cfg.kernelPath
+      "--initrd"
+      cfg.initrdPath
+      "--system"
+      cfg.systemPath
+    ]
+    ++ [ "--share-nix-store" ]
+    ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
+    ++ lib.optionals (cfg.idleTimeout > 0) [
+      "--idle-timeout"
+      (toString cfg.idleTimeout)
+    ];
+
+  wrapperScript = pkgs.writeShellScript "darwin-vz-nix-start" ''
+    find /nix/store -maxdepth 1 -name '*.lock' -size 0 -perm 600 -delete 2>/dev/null || true
+    exec ${lib.escapeShellArgs vmArgs}
+  '';
 in
 {
   options.services.darwin-vz = {
@@ -152,28 +181,7 @@ in
     launchd.daemons.darwin-vz-nix = {
       serviceConfig = {
         Label = "org.nixos.darwin-vz-nix";
-        ProgramArguments = [
-          "${cfg.package}/bin/darwin-vz-nix"
-          "start"
-          "--cores"
-          (toString cfg.cores)
-          "--memory"
-          (toString cfg.memory)
-          "--disk-size"
-          cfg.diskSize
-          "--kernel"
-          cfg.kernelPath
-          "--initrd"
-          cfg.initrdPath
-          "--system"
-          cfg.systemPath
-        ]
-        ++ [ "--share-nix-store" ]
-        ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
-        ++ lib.optionals (cfg.idleTimeout > 0) [
-          "--idle-timeout"
-          (toString cfg.idleTimeout)
-        ];
+        ProgramArguments = [ "${wrapperScript}" ];
         KeepAlive = true;
         RunAtLoad = true;
         WorkingDirectory = cfg.workingDirectory;
