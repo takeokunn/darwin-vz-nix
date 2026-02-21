@@ -1,0 +1,25 @@
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+Package.resolved
+
+# Nix
+result
+result-*
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*~
+.vscode/
+.idea/
+
+# State
+*.img
+*.pid
