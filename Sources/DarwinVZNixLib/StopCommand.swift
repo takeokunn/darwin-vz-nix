@@ -9,10 +9,14 @@ public struct Stop: AsyncParsableCommand {
     @Flag(name: .long, help: "Force stop without graceful shutdown")
     var force: Bool = false
 
+    @Option(name: .long, help: "State directory for VM data (default: ~/.local/share/darwin-vz-nix)")
+    var stateDir: String?
+
     public init() {}
 
     public mutating func run() async throws {
-        let pidFileURL = VMConfig.defaultPIDFileURL
+        let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
+        let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
         guard let pid = VMManager.readPID(from: pidFileURL) else {
             throw CleanExit.message("No running VM found (PID file not found).")

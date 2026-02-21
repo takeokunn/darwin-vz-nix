@@ -24,6 +24,10 @@ let
     "--system"
     cfg.systemPath
   ]
+  ++ [
+    "--state-dir"
+    cfg.workingDirectory
+  ]
   ++ [ "--share-nix-store" ]
   ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
   ++ lib.optionals (cfg.idleTimeout > 0) [

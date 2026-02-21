@@ -15,11 +15,14 @@ public struct Status: AsyncParsableCommand {
     @Flag(name: .long, help: "Output status in JSON format")
     var json: Bool = false
 
+    @Option(name: .long, help: "State directory for VM data (default: ~/.local/share/darwin-vz-nix)")
+    var stateDir: String?
+
     public init() {}
 
     public mutating func run() async throws {
-        let stateDirectory = VMConfig.defaultStateDirectory
-        let pidFileURL = VMConfig.defaultPIDFileURL
+        let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
+        let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
         let pid = VMManager.readPID(from: pidFileURL)
         let isRunning = pid.map { VMManager.isProcessRunning(pid: $0) } ?? false

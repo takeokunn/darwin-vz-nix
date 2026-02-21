@@ -36,6 +36,9 @@ public struct Start: AsyncParsableCommand {
     @Flag(name: .long, help: "Show VM console output on stderr")
     var verbose: Bool = false
 
+    @Option(name: .long, help: "State directory for VM data (default: ~/.local/share/darwin-vz-nix)")
+    var stateDir: String?
+
     public init() {}
 
     public mutating func run() async throws {
@@ -46,6 +49,7 @@ public struct Start: AsyncParsableCommand {
             kernelURL: URL(fileURLWithPath: kernel),
             initrdURL: URL(fileURLWithPath: initrd),
             systemURL: system.map { URL(fileURLWithPath: $0) },
+            stateDirectory: stateDir.map { URL(fileURLWithPath: $0) },
             rosetta: rosetta,
             shareNixStore: shareNixStore,
             idleTimeout: idleTimeout
