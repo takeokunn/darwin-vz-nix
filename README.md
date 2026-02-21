@@ -23,14 +23,22 @@ A Swift CLI tool and nix-darwin module that boots NixOS Linux VMs using macOS Vi
 
 NixOS guest kernel, initrd, and system toplevel are pre-built and available via [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix). When you use this flake, the binary cache is automatically configured.
 
-```bash
-# Build guest kernel + initrd + system (fetched from Cachix if available)
-nix build .#packages.aarch64-linux.guest-kernel -o result-kernel
-nix build .#packages.aarch64-linux.guest-initrd -o result-initrd
-nix build .#packages.aarch64-linux.guest-system -o result-system
-```
+Since guest artifacts target `aarch64-linux` but you are building on `aarch64-darwin`, you need extra Nix options to fetch them from the binary cache:
 
-When using the nix-darwin module, these artifacts are automatically resolved via flake inputs.
+```bash
+nix build .#packages.aarch64-linux.guest-kernel -o result-kernel \
+  --max-jobs 0 \
+  --option extra-platforms aarch64-linux \
+  --option always-allow-substitutes true
+nix build .#packages.aarch64-linux.guest-initrd -o result-initrd \
+  --max-jobs 0 \
+  --option extra-platforms aarch64-linux \
+  --option always-allow-substitutes true
+nix build .#packages.aarch64-linux.guest-system -o result-system \
+  --max-jobs 0 \
+  --option extra-platforms aarch64-linux \
+  --option always-allow-substitutes true
+```
 
 ### CLI Usage
 
