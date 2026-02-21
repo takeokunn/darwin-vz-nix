@@ -25,7 +25,7 @@ struct VMConfigIntegrationTests {
         #expect(isDirectory.boolValue)
     }
 
-    @Test("ensureStateDirectory sets 0o700 permissions")
+    @Test("ensureStateDirectory sets 0o755 permissions")
     func ensureStateDirectorySetsPermissions() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -42,7 +42,7 @@ struct VMConfigIntegrationTests {
 
         let attrs = try FileManager.default.attributesOfItem(atPath: stateDir.path)
         let posix = attrs[.posixPermissions] as? Int
-        #expect(posix == Int(0o700))
+        #expect(posix == Int(0o755))
     }
 
     @Test("ensureStateDirectory is idempotent")
