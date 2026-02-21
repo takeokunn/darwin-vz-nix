@@ -186,7 +186,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         // VZVirtualMachine requires all operations on the queue specified in init.
         // Swift async/await runs on the cooperative thread pool, which is NOT the VM's queue.
         // We must dispatch start() to the VM's DispatchQueue explicitly.
-        let vmRef = vm
+        nonisolated(unsafe) let vmRef = vm
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 vmRef.start { result in
@@ -241,7 +241,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
         // Graceful: send ACPI power button request to the guest OS.
         // VZVirtualMachine requires all operations on the VM's queue.
-        let vmRef = vm
+        nonisolated(unsafe) let vmRef = vm
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {

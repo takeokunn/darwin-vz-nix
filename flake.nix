@@ -112,7 +112,7 @@
       };
 
       # Formatter
-      formatter.${system} = pkgs.nixfmt;
+      formatter.${system} = pkgs.nixfmt-tree;
 
       # Dev shell for Swift development
       devShells.${system}.default = pkgs.mkShell {

@@ -148,25 +148,22 @@ struct NetworkManager {
 
         let guestIP = try readGuestIP()
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = [
+        let arguments = [
+            "/usr/bin/ssh",
             "-i", sshKeyPath.path,
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "UserKnownHostsFile=\(stateDirectory.appendingPathComponent("ssh/known_hosts").path)",
             "-o", "LogLevel=ERROR",
             "builder@\(guestIP)",
         ] + extraArgs
-        process.standardInput = FileHandle.standardInput
-        process.standardOutput = FileHandle.standardOutput
-        process.standardError = FileHandle.standardError
 
-        try process.run()
-        process.waitUntilExit()
+        // Use execv to replace the current process with ssh.
+        // Process() doesn't transfer terminal control to the child,
+        // which prevents the login shell from starting interactively.
+        let cArgs = arguments.map { strdup($0) } + [nil]
+        execv("/usr/bin/ssh", cArgs)
 
-        let status = process.terminationStatus
-        if status != 0 {
-            throw NetworkError.sshConnectionFailed(status)
-        }
+        // execv only returns on failure
+        throw NetworkError.sshConnectionFailed(errno)
     }
 }
