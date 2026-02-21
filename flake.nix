@@ -25,8 +25,6 @@
       system = "aarch64-darwin";
       pkgs = nixpkgs.legacyPackages.${system};
       linuxSystem = "aarch64-linux";
-    in
-    let
       darwinVzNix = pkgs.callPackage ./nix/package.nix { };
     in
     {
@@ -40,7 +38,7 @@
       nixosConfigurations.darwin-vz-guest = nixpkgs-linux.lib.nixosSystem {
         system = linuxSystem;
         modules = [
-          ./nix/nixos/configuration.nix
+          ./nix/guest
         ];
       };
 
@@ -53,7 +51,7 @@
 
       # nix-darwin module
       darwinModules.default = {
-        imports = [ ./nix/darwin-module.nix ];
+        imports = [ ./nix/host/darwin-module.nix ];
         config.services.darwin-vz.package = nixpkgs.lib.mkDefault darwinVzNix;
       };
 
@@ -62,6 +60,28 @@
         guest-kernel = self.packages.${linuxSystem}.guest-kernel;
         guest-initrd = self.packages.${linuxSystem}.guest-initrd;
         guest-system = self.packages.${linuxSystem}.guest-system;
+      };
+
+      # Checks for aarch64-darwin (build verification + formatting)
+      checks.${system} = {
+        build = darwinVzNix;
+        formatting =
+          let
+            src = nixpkgs.lib.cleanSourceWith {
+              src = ./.;
+              filter =
+                path: type:
+                let
+                  baseName = builtins.baseNameOf path;
+                in
+                !(baseName == ".git" || baseName == ".build" || baseName == ".swiftpm" || baseName == "result");
+            };
+          in
+          pkgs.runCommand "check-formatting" { } ''
+            find ${src} -name '*.nix' -exec ${pkgs.nixfmt}/bin/nixfmt --check {} +
+            ${pkgs.swiftformat}/bin/swiftformat --lint ${src}/Sources ${src}/Tests
+            touch $out
+          '';
       };
 
       # Formatter

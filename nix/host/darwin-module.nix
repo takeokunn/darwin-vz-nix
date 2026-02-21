@@ -8,32 +8,30 @@
 let
   cfg = config.services.darwin-vz;
 
-  vmArgs =
-    [
-      "${cfg.package}/bin/darwin-vz-nix"
-      "start"
-      "--cores"
-      (toString cfg.cores)
-      "--memory"
-      (toString cfg.memory)
-      "--disk-size"
-      cfg.diskSize
-      "--kernel"
-      cfg.kernelPath
-      "--initrd"
-      cfg.initrdPath
-      "--system"
-      cfg.systemPath
-    ]
-    ++ [ "--share-nix-store" ]
-    ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
-    ++ lib.optionals (cfg.idleTimeout > 0) [
-      "--idle-timeout"
-      (toString cfg.idleTimeout)
-    ];
+  vmArgs = [
+    "${cfg.package}/bin/darwin-vz-nix"
+    "start"
+    "--cores"
+    (toString cfg.cores)
+    "--memory"
+    (toString cfg.memory)
+    "--disk-size"
+    cfg.diskSize
+    "--kernel"
+    cfg.kernelPath
+    "--initrd"
+    cfg.initrdPath
+    "--system"
+    cfg.systemPath
+  ]
+  ++ [ "--share-nix-store" ]
+  ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
+  ++ lib.optionals (cfg.idleTimeout > 0) [
+    "--idle-timeout"
+    (toString cfg.idleTimeout)
+  ];
 
   wrapperScript = pkgs.writeShellScript "darwin-vz-nix-start" ''
-    find /nix/store -maxdepth 1 -name '*.lock' -size 0 -perm 600 -delete 2>/dev/null || true
     exec ${lib.escapeShellArgs vmArgs}
   '';
 in
@@ -74,12 +72,6 @@ in
       type = lib.types.ints.unsigned;
       default = 180;
       description = "Idle timeout in minutes before VM is stopped. 0 to disable.";
-    };
-
-    ephemeral = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Whether to wipe the VM disk on restart.";
     };
 
     workingDirectory = lib.mkOption {

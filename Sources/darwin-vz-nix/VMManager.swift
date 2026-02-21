@@ -16,15 +16,15 @@ enum VMManagerError: LocalizedError {
             return "No virtual machine is currently running."
         case .vmAlreadyRunning:
             return "A virtual machine is already running."
-        case .diskImageCreationFailed(let reason):
+        case let .diskImageCreationFailed(reason):
             return "Failed to create disk image: \(reason)"
-        case .pidFileWriteFailed(let reason):
+        case let .pidFileWriteFailed(reason):
             return "Failed to write PID file: \(reason)"
-        case .startFailed(let reason):
+        case let .startFailed(reason):
             return "Failed to start virtual machine: \(reason)"
-        case .stopFailed(let reason):
+        case let .stopFailed(reason):
             return "Failed to stop virtual machine: \(reason)"
-        case .configurationInvalid(let reason):
+        case let .configurationInvalid(reason):
             return "Invalid VM configuration: \(reason)"
         }
     }
@@ -34,15 +34,14 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     private var virtualMachine: VZVirtualMachine?
     private let config: VMConfig
     private let queue = DispatchQueue(label: "com.darwin-vz-nix.vm")
-    private var lastActivityTime: Date = Date()
-    private var idleCheckTimer: DispatchSourceTimer?
     private let idleTimeoutMinutes: Int
     private let verbose: Bool
     private var consolePipe: Pipe?
+    private var idleMonitor: IdleMonitor?
 
     init(config: VMConfig, verbose: Bool = false) {
         self.config = config
-        self.idleTimeoutMinutes = config.idleTimeout
+        idleTimeoutMinutes = config.idleTimeout
         self.verbose = verbose
         super.init()
     }
@@ -93,7 +92,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         // Network (NAT) with deterministic MAC for DHCP lease discovery
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         networkDevice.attachment = VZNATNetworkDeviceAttachment()
-        if let mac = VZMACAddress(string: VMConfig.macAddressString) {
+        if let mac = VZMACAddress(string: Constants.macAddressString) {
             networkDevice.macAddress = mac
         }
         vmConfig.networkDevices = [networkDevice]
@@ -180,7 +179,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
         let vm = VZVirtualMachine(configuration: vmConfig, queue: queue)
         vm.delegate = self
-        self.virtualMachine = vm
+        virtualMachine = vm
 
         try writePIDFile()
 
@@ -193,7 +192,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
                     switch result {
                     case .success:
                         continuation.resume()
-                    case .failure(let error):
+                    case let .failure(error):
                         continuation.resume(throwing: error)
                     }
                 }
@@ -201,7 +200,25 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         }
 
         if idleTimeoutMinutes > 0 {
-            startIdleMonitoring()
+            let monitor = IdleMonitor(
+                timeoutMinutes: idleTimeoutMinutes,
+                guestIPFileURL: config.guestIPFileURL,
+                queue: queue,
+                onIdleShutdown: { [weak self] in
+                    guard let self = self else { return }
+                    fputs("Warning: VM idle for \(self.idleTimeoutMinutes) minute(s). Shutting down automatically.\n", stderr)
+                    Task {
+                        do {
+                            try await self.stop(force: false)
+                        } catch {
+                            fputs("Warning: Idle shutdown failed: \(error.localizedDescription)\n", stderr)
+                        }
+                        Darwin.exit(0)
+                    }
+                }
+            )
+            monitor.start()
+            idleMonitor = monitor
         }
     }
 
@@ -210,13 +227,13 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
             throw VMManagerError.vmNotRunning
         }
 
-        idleCheckTimer?.cancel()
-        idleCheckTimer = nil
+        idleMonitor?.stop()
+        idleMonitor = nil
 
         if force {
             // Force stop: clean up and let the caller exit the process.
             // The VM runs in-process, so process exit terminates it immediately.
-            self.virtualMachine = nil
+            virtualMachine = nil
             removePIDFile()
             return
         }
@@ -234,90 +251,22 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
             }
         }
 
-        self.virtualMachine = nil
+        virtualMachine = nil
         removePIDFile()
     }
 
     // MARK: - VZVirtualMachineDelegate
 
-    func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
+    func virtualMachine(_: VZVirtualMachine, didStopWithError error: Error) {
         fputs("VM stopped with error: \(error.localizedDescription)\n", stderr)
         removePIDFile()
         exit(1)
     }
 
-    func guestDidStop(_ virtualMachine: VZVirtualMachine) {
+    func guestDidStop(_: VZVirtualMachine) {
         fputs("VM guest has stopped.\n", stderr)
         removePIDFile()
         exit(0)
-    }
-
-    // MARK: - Idle Timeout Monitoring
-
-    private func startIdleMonitoring() {
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 30, repeating: 30)
-        timer.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            let _ = self.checkActivity()
-            let elapsed = Date().timeIntervalSince(self.lastActivityTime)
-            if elapsed >= Double(self.idleTimeoutMinutes) * 60.0 {
-                self.shutdownDueToIdle()
-            }
-        }
-        timer.resume()
-        idleCheckTimer = timer
-    }
-
-    private func checkActivity() -> Bool {
-        // Read the guest IP to check for active SSH connections
-        guard let guestIP = try? String(
-            contentsOf: config.guestIPFileURL,
-            encoding: .utf8
-        ).trimmingCharacters(in: .whitespacesAndNewlines),
-              !guestIP.isEmpty
-        else {
-            return false
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
-        process.arguments = ["-i", "@\(guestIP):22", "-n", "-P"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return false
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-
-        if output.contains("ESTABLISHED") {
-            lastActivityTime = Date()
-            return true
-        }
-        return false
-    }
-
-    private func shutdownDueToIdle() {
-        fputs("Warning: VM idle for \(idleTimeoutMinutes) minute(s). Shutting down automatically.\n", stderr)
-        Task {
-            do {
-                try await self.stop(force: false)
-            } catch {
-                fputs("Warning: Idle shutdown failed: \(error.localizedDescription)\n", stderr)
-            }
-            Darwin.exit(0)
-        }
-    }
-
-    func resetActivityTimer() {
-        lastActivityTime = Date()
     }
 
     // MARK: - Disk Image Management

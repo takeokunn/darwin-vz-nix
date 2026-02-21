@@ -109,12 +109,13 @@ darwin-vz-nix/
 ├── flake.nix                  # Nix flake (build + NixOS configuration)
 ├── flake.lock
 ├── nix/
-│   ├── nixos/
-│   │   ├── configuration.nix  # Guest NixOS configuration
-│   │   ├── builder.nix        # Nix builder settings
-│   │   └── rosetta.nix        # Rosetta 2 binfmt configuration
-│   ├── darwin-module.nix      # nix-darwin module
-│   └── package.nix            # Swift CLI Nix package definition
+│   ├── package.nix            # Swift CLI Nix package definition
+│   ├── host/
+│   │   └── darwin-module.nix  # nix-darwin module
+│   └── guest/
+│       ├── configuration.nix  # Guest NixOS configuration
+│       ├── builder.nix        # Nix builder settings
+│       └── rosetta.nix        # Rosetta 2 binfmt configuration
 ├── .github/
 │   └── workflows/
 │       └── ci.yml             # CI (Swift build + Nix flake check)

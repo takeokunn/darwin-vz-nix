@@ -1,14 +1,8 @@
-{
-  config,
-  pkgs,
-  lib,
-  ...
-}:
+{ ... }:
 
 {
   # Rosetta 2 for x86_64-linux binary execution
-  # Uses NixOS built-in virtualisation.rosetta module
-  # The "rosetta" tag must match the Swift VirtioFS tag exactly
+  # The "rosetta" tag is a cross-language contract: must match Constants.rosettaTag in Swift
   virtualisation.rosetta.enable = true;
   virtualisation.rosetta.mountTag = "rosetta";
 

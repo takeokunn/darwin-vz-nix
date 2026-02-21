@@ -12,14 +12,13 @@ enum VirtioFSError: LocalizedError {
             return "Rosetta is not available on this platform (requires Apple Silicon)."
         case .rosettaNotInstalled:
             return "Rosetta is not installed. Install with: softwareupdate --install-rosetta"
-        case .sharedDirectoryFailed(let reason):
+        case let .sharedDirectoryFailed(reason):
             return "Failed to configure shared directory: \(reason)"
         }
     }
 }
 
-struct VirtioFSManager {
-
+enum VirtioFSManager {
     /// Configure VirtioFS share for host's /nix/store (read-only)
     static func createNixStoreShare() throws -> VZVirtioFileSystemDeviceConfiguration {
         let nixStorePath = URL(fileURLWithPath: "/nix/store")
@@ -29,7 +28,7 @@ struct VirtioFSManager {
 
         let sharedDir = VZSharedDirectory(url: nixStorePath, readOnly: true)
         let share = VZSingleDirectoryShare(directory: sharedDir)
-        let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: "nix-store")
+        let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: Constants.nixStoreTag)
         fsConfig.share = share
         return fsConfig
     }
@@ -58,7 +57,7 @@ struct VirtioFSManager {
 
         case .installed:
             let rosettaShare = try VZLinuxRosettaDirectoryShare()
-            let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: "rosetta")
+            let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: Constants.rosettaTag)
             fsConfig.share = rosettaShare
             fputs("Rosetta 2 enabled for x86_64 binary execution.\n", stderr)
             return fsConfig
@@ -77,7 +76,7 @@ struct VirtioFSManager {
 
         let sharedDir = VZSharedDirectory(url: sshDirectory, readOnly: true)
         let share = VZSingleDirectoryShare(directory: sharedDir)
-        let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: "ssh-keys")
+        let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: Constants.sshKeysTag)
         fsConfig.share = share
         return fsConfig
     }

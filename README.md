@@ -25,9 +25,9 @@ NixOS guest kernel, initrd, and system toplevel are pre-built and available via 
 
 ```bash
 # Build guest kernel + initrd + system (fetched from Cachix if available)
-nix build .#packages.aarch64-linux.guest-kernel
-nix build .#packages.aarch64-linux.guest-initrd
-nix build .#packages.aarch64-linux.guest-system
+nix build .#packages.aarch64-linux.guest-kernel -o result-kernel
+nix build .#packages.aarch64-linux.guest-initrd -o result-initrd
+nix build .#packages.aarch64-linux.guest-system -o result-system
 ```
 
 When using the nix-darwin module, these artifacts are automatically resolved via flake inputs.
@@ -37,8 +37,9 @@ When using the nix-darwin module, these artifacts are automatically resolved via
 ```bash
 # Start a VM
 nix run .#darwin-vz-nix -- start \
-  --kernel ./result/Image \
-  --initrd ./result-initrd/initrd
+  --kernel ./result-kernel/Image \
+  --initrd ./result-initrd/initrd \
+  --system ./result-system
 
 # Check VM status
 nix run .#darwin-vz-nix -- status
@@ -128,7 +129,6 @@ This will:
 | `kernelPath` | string | *(required)* | Path to guest kernel image |
 | `initrdPath` | string | *(required)* | Path to guest initrd |
 | `systemPath` | string | *(required)* | Path to guest system toplevel |
-| `ephemeral` | bool | `false` | Wipe disk on restart |
 | `workingDirectory` | string | `"/var/lib/darwin-vz-nix"` | VM state directory |
 | `maxJobs` | positive int | same as `cores` | Concurrent build jobs |
 | `protocol` | string | `"ssh-ng"` | Build protocol |

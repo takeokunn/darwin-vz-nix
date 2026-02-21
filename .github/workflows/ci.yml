@@ -24,9 +24,18 @@ jobs:
       - name: Show flake outputs
         run: nix flake show
 
+  darwin-test:
+    name: macOS Checks
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Swift Tests
+        run: swift test
+
   cachix-push-kernel:
     name: Push guest-kernel to Cachix
-    needs: nix-check
+    needs: [nix-check, darwin-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
     steps:
@@ -45,7 +54,7 @@ jobs:
 
   cachix-push-initrd:
     name: Push guest-initrd to Cachix
-    needs: nix-check
+    needs: [nix-check, darwin-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
     steps:
@@ -64,7 +73,7 @@ jobs:
 
   cachix-push-system:
     name: Push guest-system to Cachix
-    needs: nix-check
+    needs: [nix-check, darwin-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
     steps:

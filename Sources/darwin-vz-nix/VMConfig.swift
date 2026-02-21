@@ -10,17 +10,17 @@ enum VMConfigError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidCoreCount(let count):
+        case let .invalidCoreCount(count):
             return "Invalid CPU core count: \(count). Must be at least 1."
-        case .insufficientMemory(let mb):
+        case let .insufficientMemory(mb):
             return "Insufficient memory: \(mb) MB. Must be at least 512 MB."
-        case .kernelNotFound(let url):
+        case let .kernelNotFound(url):
             return "Kernel image not found at: \(url.path)"
-        case .initrdNotFound(let url):
+        case let .initrdNotFound(url):
             return "Initrd image not found at: \(url.path)"
-        case .invalidDiskSize(let size):
+        case let .invalidDiskSize(size):
             return "Invalid disk size format: '\(size)'. Use format like '100G', '512M', or bytes."
-        case .stateDirectoryCreationFailed(let path):
+        case let .stateDirectoryCreationFailed(path):
             return "Failed to create state directory at: \(path)"
         }
     }
@@ -45,6 +45,26 @@ struct VMConfig {
             .appendingPathComponent("share", isDirectory: true)
             .appendingPathComponent("darwin-vz-nix", isDirectory: true)
     }()
+
+    static var defaultPIDFileURL: URL {
+        defaultStateDirectory.appendingPathComponent("vm.pid")
+    }
+
+    // MARK: - Static Path Helpers
+
+    static func sshKeyURL(for stateDirectory: URL) -> URL {
+        stateDirectory
+            .appendingPathComponent("ssh", isDirectory: true)
+            .appendingPathComponent("id_ed25519")
+    }
+
+    static func sshDirectory(for stateDirectory: URL) -> URL {
+        stateDirectory.appendingPathComponent("ssh", isDirectory: true)
+    }
+
+    static func guestIPFileURL(for stateDirectory: URL) -> URL {
+        stateDirectory.appendingPathComponent("guest-ip")
+    }
 
     init(
         cores: Int = 4,
@@ -77,13 +97,11 @@ struct VMConfig {
     }
 
     var sshDirectory: URL {
-        stateDirectory.appendingPathComponent("ssh", isDirectory: true)
+        VMConfig.sshDirectory(for: stateDirectory)
     }
 
     var sshKeyURL: URL {
-        stateDirectory
-            .appendingPathComponent("ssh", isDirectory: true)
-            .appendingPathComponent("id_ed25519")
+        VMConfig.sshKeyURL(for: stateDirectory)
     }
 
     var pidFileURL: URL {
@@ -95,12 +113,8 @@ struct VMConfig {
     }
 
     var guestIPFileURL: URL {
-        stateDirectory.appendingPathComponent("guest-ip")
+        VMConfig.guestIPFileURL(for: stateDirectory)
     }
-
-    // Deterministic locally-administered MAC address for the VM.
-    // "02" = locally administered + unicast; "da:72:56" = mnemonic for "darVZ".
-    static let macAddressString = "02:da:72:56:00:01"
 
     // MARK: - Validation
 

@@ -1,20 +1,31 @@
-{
-  config,
-  pkgs,
-  lib,
-  ...
-}:
+{ ... }:
 
 {
+  # SSH server for remote build connections
+  services.openssh = {
+    enable = true;
+    settings = {
+      PermitRootLogin = "no";
+      PasswordAuthentication = false;
+    };
+  };
+
+  # Builder user (SSH login target for remote builds)
+  users.users.builder = {
+    isNormalUser = true;
+    group = "builder";
+    home = "/home/builder";
+  };
+  users.groups.builder = { };
+
   # SSH key injection from host via VirtioFS
-  # The host mounts its SSH key directory at /run/ssh-keys
   fileSystems."/run/ssh-keys" = {
-    device = "ssh-keys"; # Must match Swift VirtioFS tag
+    device = "ssh-keys"; # Cross-language contract: must match Constants.sshKeysTag in Swift
     fsType = "virtiofs";
     options = [ "ro" ];
   };
 
-  # Service to copy the host's SSH public key to builder's authorized_keys
+  # Copy the host's SSH public key to builder's authorized_keys
   systemd.services.ssh-key-inject = {
     description = "Inject host SSH public key for builder user";
     wantedBy = [ "multi-user.target" ];
@@ -39,13 +50,19 @@
     '';
   };
 
-  # Nix daemon optimizations for builder use
+  # Nix daemon configuration for remote builds
   nix.settings = {
-    # Allow the builder to use all cores
+    trusted-users = [
+      "root"
+      "builder"
+    ];
+    experimental-features = [
+      "nix-command"
+      "flakes"
+    ];
+    substituters = [ "https://cache.nixos.org" ];
     cores = 0; # 0 means use all available
-    # Maximum parallel build jobs
     max-jobs = "auto";
-    # Use binary caches from host
     builders-use-substitutes = true;
   };
 
@@ -53,4 +70,10 @@
   systemd.services.nix-daemon = {
     after = [ "ssh-key-inject.service" ];
   };
+
+  # Minimal system - no GUI, no unnecessary services
+  documentation.enable = false;
+  documentation.nixos.enable = false;
+
+  system.stateVersion = "24.11";
 }

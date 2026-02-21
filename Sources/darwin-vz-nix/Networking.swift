@@ -8,11 +8,11 @@ enum NetworkError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .sshKeyGenerationFailed(let status):
+        case let .sshKeyGenerationFailed(status):
             return "SSH key generation failed with exit code: \(status)"
-        case .sshConnectionFailed(let status):
+        case let .sshConnectionFailed(status):
             return "SSH connection failed with exit code: \(status)"
-        case .sshKeyNotFound(let path):
+        case let .sshKeyNotFound(path):
             return "SSH key not found at: \(path)"
         case .guestIPNotFound:
             return "Could not discover guest VM IP address. Is the VM running?"
@@ -24,19 +24,11 @@ struct NetworkManager {
     let stateDirectory: URL
 
     var sshKeyPath: URL {
-        stateDirectory
-            .appendingPathComponent("ssh", isDirectory: true)
-            .appendingPathComponent("id_ed25519")
-    }
-
-    var sshPublicKeyPath: URL {
-        stateDirectory
-            .appendingPathComponent("ssh", isDirectory: true)
-            .appendingPathComponent("id_ed25519.pub")
+        VMConfig.sshKeyURL(for: stateDirectory)
     }
 
     func ensureSSHKeys() throws {
-        let sshDir = stateDirectory.appendingPathComponent("ssh", isDirectory: true)
+        let sshDir = VMConfig.sshDirectory(for: stateDirectory)
 
         try FileManager.default.createDirectory(
             at: sshDir,
@@ -72,7 +64,7 @@ struct NetworkManager {
 
     /// Discover guest VM IP by polling /var/db/dhcpd_leases for the guest hostname.
     /// macOS's vmnet DHCP server writes lease entries with the hostname reported by the guest.
-    func discoverGuestIP(hostname: String = "darwin-vz-guest", timeout: TimeInterval = 120, notBefore: Date) async throws -> String {
+    func discoverGuestIP(hostname: String = Constants.guestHostname, timeout: TimeInterval = 120, notBefore: Date) async throws -> String {
         let leaseFile = "/var/db/dhcpd_leases"
         let deadline = Date().addingTimeInterval(timeout)
         let notBeforeTimestamp = UInt64(notBefore.timeIntervalSince1970)
@@ -87,18 +79,12 @@ struct NetworkManager {
         throw NetworkError.guestIPNotFound
     }
 
-    /// Parse macOS DHCP lease file for a matching hostname.
-    /// Format: { name=<hostname> ip_address=<ip> lease=0x<hex_timestamp> ... } blocks separated by }
-    /// Returns the IP from the entry with the newest (highest) lease timestamp to avoid stale leases.
-    private func parseLeaseFile(path: String, hostname: String, notBefore: UInt64) -> String? {
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
-            return nil
-        }
-
+    /// Parse macOS DHCP lease content for a matching hostname.
+    /// This is separated from file I/O to enable unit testing.
+    static func parseLeaseContent(_ content: String, hostname: String, notBefore: UInt64) -> String? {
         var newestTimestamp: UInt64 = 0
         var newestIP: String?
 
-        // Split into lease blocks
         let blocks = content.components(separatedBy: "}")
         for block in blocks {
             let lines = block.components(separatedBy: "\n")
@@ -127,9 +113,16 @@ struct NetworkManager {
         return newestIP
     }
 
+    private func parseLeaseFile(path: String, hostname: String, notBefore: UInt64) -> String? {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return nil
+        }
+        return NetworkManager.parseLeaseContent(content, hostname: hostname, notBefore: notBefore)
+    }
+
     /// Read previously saved guest IP from the state directory.
     func readGuestIP() throws -> String {
-        let guestIPFileURL = stateDirectory.appendingPathComponent("guest-ip")
+        let guestIPFileURL = VMConfig.guestIPFileURL(for: stateDirectory)
         guard let content = try? String(contentsOf: guestIPFileURL, encoding: .utf8) else {
             throw NetworkError.guestIPNotFound
         }
@@ -142,7 +135,7 @@ struct NetworkManager {
 
     /// Save guest IP to the state directory.
     func writeGuestIP(_ ip: String) throws {
-        let guestIPFileURL = stateDirectory.appendingPathComponent("guest-ip")
+        let guestIPFileURL = VMConfig.guestIPFileURL(for: stateDirectory)
         try ip.write(to: guestIPFileURL, atomically: true, encoding: .utf8)
     }
 
