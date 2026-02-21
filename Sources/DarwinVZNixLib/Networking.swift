@@ -137,6 +137,10 @@ struct NetworkManager {
     func writeGuestIP(_ ip: String) throws {
         let guestIPFileURL = VMConfig.guestIPFileURL(for: stateDirectory)
         try ip.write(to: guestIPFileURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: guestIPFileURL.path
+        )
     }
 
     // MARK: - SSH Connection

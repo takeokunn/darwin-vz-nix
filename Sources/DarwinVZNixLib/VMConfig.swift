@@ -145,7 +145,7 @@ struct VMConfig {
                 try fm.createDirectory(
                     at: stateDirectory,
                     withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
+                    attributes: [.posixPermissions: 0o755]
                 )
             } catch {
                 throw VMConfigError.stateDirectoryCreationFailed(
