@@ -87,11 +87,15 @@ struct NetworkManager {
     }
 
     /// Parse macOS DHCP lease file for a matching hostname.
-    /// Format: { name=<hostname> ip_address=<ip> ... } blocks separated by }
+    /// Format: { name=<hostname> ip_address=<ip> lease=0x<hex_timestamp> ... } blocks separated by }
+    /// Returns the IP from the entry with the newest (highest) lease timestamp to avoid stale leases.
     private func parseLeaseFile(path: String, hostname: String) -> String? {
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
             return nil
         }
+
+        var newestTimestamp: UInt64 = 0
+        var newestIP: String?
 
         // Split into lease blocks
         let blocks = content.components(separatedBy: "}")
@@ -99,6 +103,7 @@ struct NetworkManager {
             let lines = block.components(separatedBy: "\n")
             var name: String?
             var ipAddress: String?
+            var leaseTimestamp: UInt64 = 0
 
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -106,15 +111,19 @@ struct NetworkManager {
                     name = String(trimmed.dropFirst("name=".count))
                 } else if trimmed.hasPrefix("ip_address=") {
                     ipAddress = String(trimmed.dropFirst("ip_address=".count))
+                } else if trimmed.hasPrefix("lease=0x") {
+                    let hexStr = String(trimmed.dropFirst("lease=0x".count))
+                    leaseTimestamp = UInt64(hexStr, radix: 16) ?? 0
                 }
             }
 
-            if name == hostname, let ip = ipAddress {
-                return ip
+            if name == hostname, let ip = ipAddress, leaseTimestamp >= newestTimestamp {
+                newestTimestamp = leaseTimestamp
+                newestIP = ip
             }
         }
 
-        return nil
+        return newestIP
     }
 
     /// Read previously saved guest IP from the state directory.

@@ -69,6 +69,7 @@
   fileSystems."/nix/.ro-store" = {
     device = "nix-store"; # Must match Swift VirtioFS tag
     fsType = "virtiofs";
+    options = [ "ro" ];
     neededForBoot = true;
   };
 
