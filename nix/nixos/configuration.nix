@@ -17,6 +17,12 @@
   # No bootloader - direct kernel boot via VZLinuxBootLoader
   boot.loader.grub.enable = false;
 
+  # Mount /nix/store as writable. Our overlay (host VirtioFS as lowerdir +
+  # tmpfs upperdir) provides the writable layer the nix-daemon needs.
+  # Without this, NixOS remounts the overlay as read-only and lock file
+  # creation in /nix/store fails with "Permission denied".
+  boot.nixStoreMountOpts = [ "rw" ];
+
   # Kernel configuration for Virtualization.framework
   boot.kernelParams = [ "console=hvc0" ];
 

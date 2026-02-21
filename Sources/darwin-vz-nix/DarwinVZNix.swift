@@ -55,6 +55,9 @@ extension DarwinVZNix {
         @Option(name: .long, help: "Idle timeout in minutes (0 = disabled, default: 0)")
         var idleTimeout: Int = 0
 
+        @Flag(name: .long, help: "Show VM console output on stderr")
+        var verbose: Bool = false
+
         mutating func run() async throws {
             let config = VMConfig(
                 cores: cores,
@@ -68,13 +71,22 @@ extension DarwinVZNix {
                 idleTimeout: idleTimeout
             )
 
+            // Prevent double-start: check PID file before any setup
+            if let existingPID = VMManager.readPID(from: config.pidFileURL),
+               VMManager.isProcessRunning(pid: existingPID)
+            {
+                throw ValidationError(
+                    "A VM is already running (PID: \(existingPID)). Stop it first with 'darwin-vz-nix stop'."
+                )
+            }
+
             try config.validate()
             try config.ensureStateDirectory()
 
             let networkManager = NetworkManager(stateDirectory: config.stateDirectory)
             try networkManager.ensureSSHKeys()
 
-            let vmManager = VMManager(config: config)
+            let vmManager = VMManager(config: config, verbose: verbose)
 
             signal(SIGINT, SIG_IGN)
             signal(SIGTERM, SIG_IGN)
@@ -98,9 +110,9 @@ extension DarwinVZNix {
                 fputs("\nReceived SIGTERM, shutting down VM...\n", stderr)
                 Task {
                     do {
-                        try await vmManager.stop(force: true)
+                        try await vmManager.stop(force: false)
                     } catch {
-                        fputs("Warning: Force shutdown failed: \(error.localizedDescription)\n", stderr)
+                        fputs("Warning: Graceful shutdown failed: \(error.localizedDescription)\n", stderr)
                     }
                     Darwin.exit(0)
                 }
@@ -114,7 +126,7 @@ extension DarwinVZNix {
             // Discover guest IP via DHCP lease polling
             fputs("Waiting for guest IP address...\n", stderr)
             do {
-                let guestIP = try networkManager.discoverGuestIP()
+                let guestIP = try await networkManager.discoverGuestIP()
                 try networkManager.writeGuestIP(guestIP)
                 fputs("Guest IP: \(guestIP)\n", stderr)
             } catch {
@@ -128,7 +140,9 @@ extension DarwinVZNix {
             // VZVirtualMachineDelegate callbacks, which call exit().
             // We cannot use dispatchMain() here because AsyncParsableCommand.run()
             // executes on the cooperative thread pool, not the main thread.
-            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+            // Using an infinite AsyncStream avoids CheckedContinuation leak warnings.
+            let stream = AsyncStream<Void> { _ in }
+            for await _ in stream {}
         }
     }
 }
@@ -162,7 +176,25 @@ extension DarwinVZNix {
             fputs("Sending \(signalName) to VM process (PID: \(pid))...\n", stderr)
 
             if kill(pid, stopSignal) == 0 {
-                fputs("Signal sent successfully.\n", stderr)
+                fputs("Signal sent. Waiting for VM to stop...\n", stderr)
+
+                // Wait for process to exit: 2s for SIGKILL, 30s for SIGTERM
+                let maxWait: UInt32 = force ? 2_000_000 : 30_000_000
+                var waited: UInt32 = 0
+                while VMManager.isProcessRunning(pid: pid) && waited < maxWait {
+                    usleep(100_000) // 100ms
+                    waited += 100_000
+                }
+
+                if VMManager.isProcessRunning(pid: pid) {
+                    fputs("Warning: Process \(pid) still running after \(signalName).\n", stderr)
+                } else {
+                    fputs("VM stopped.\n", stderr)
+                    // SIGKILL prevents the target from cleaning up, so we do it here
+                    if force {
+                        try? FileManager.default.removeItem(at: pidFileURL)
+                    }
+                }
             } else {
                 let err = String(cString: strerror(errno))
                 throw ValidationError("Failed to send signal to PID \(pid): \(err)")

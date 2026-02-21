@@ -7,7 +7,7 @@ A Swift CLI tool and nix-darwin module that boots NixOS Linux VMs using macOS Vi
 - **Native Performance**: Direct Virtualization.framework integration — no QEMU, no vfkit
 - **Rosetta 2**: Execute x86_64-linux builds at ~70-90% native speed (vs ~10-17x slowdown with QEMU emulation)
 - **VirtioFS + Overlay**: Share host's `/nix/store` with the guest via overlayfs — avoid re-downloading derivations
-- **Auto SSH**: ED25519 keys auto-generated, localhost-only networking
+- **Auto SSH**: ED25519 keys auto-generated, DHCP-based guest IP discovery via NAT
 - **Idle Timeout**: Automatically shut down VM after configurable idle period
 - **nix-darwin Module**: Declarative configuration with `services.darwin-vz`
 
@@ -21,13 +21,16 @@ A Swift CLI tool and nix-darwin module that boots NixOS Linux VMs using macOS Vi
 
 ### Building Guest Artifacts
 
-NixOS guest kernel and initrd are pre-built and available via [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix). When you use this flake, the binary cache is automatically configured.
+NixOS guest kernel, initrd, and system toplevel are pre-built and available via [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix). When you use this flake, the binary cache is automatically configured.
 
 ```bash
-# Build guest kernel + initrd (fetched from Cachix if available)
+# Build guest kernel + initrd + system (fetched from Cachix if available)
 nix build .#packages.aarch64-linux.guest-kernel
 nix build .#packages.aarch64-linux.guest-initrd
+nix build .#packages.aarch64-linux.guest-system
 ```
+
+When using the nix-darwin module, these artifacts are automatically resolved via flake inputs.
 
 ### CLI Usage
 
@@ -61,12 +64,12 @@ darwin-vz-nix start [OPTIONS]
   --disk-size SIZE   Disk size, e.g. 100G (default: 100G)
   --kernel PATH      Path to kernel Image (required)
   --initrd PATH      Path to initrd (required)
+  --system PATH      Path to NixOS system toplevel (optional)
   --idle-timeout N   Idle timeout in minutes (0 = disabled, default: 0)
   --rosetta/--no-rosetta    Enable/disable Rosetta 2 (default: enabled)
   --share-nix-store/--no-share-nix-store  Share /nix/store (default: enabled)
 
-darwin-vz-nix ssh [OPTIONS] [-- ARGS...]
-  --port N           SSH port (default: 31122)
+darwin-vz-nix ssh [-- ARGS...]
 
 darwin-vz-nix stop [OPTIONS]
   --force            Force stop without graceful shutdown
@@ -99,8 +102,9 @@ Then in your nix-darwin configuration:
     diskSize = "100G";
     rosetta = true;
     idleTimeout = 180;  # minutes (0 = disabled)
-    kernelPath = "/path/to/kernel/Image";
-    initrdPath = "/path/to/initrd";
+    kernelPath = "${inputs.darwin-vz-nix.packages.aarch64-linux.guest-kernel}/Image";
+    initrdPath = "${inputs.darwin-vz-nix.packages.aarch64-linux.guest-initrd}/initrd";
+    systemPath = "${inputs.darwin-vz-nix.packages.aarch64-linux.guest-system}";
   };
 }
 ```
@@ -108,9 +112,29 @@ Then in your nix-darwin configuration:
 This will:
 - Register the VM as a `nix.buildMachines` entry
 - Create a launchd daemon that starts the VM on boot
-- Generate SSH configuration for the builder
+- Generate SSH configuration using `ProxyCommand` to dynamically read the guest IP from `${workingDirectory}/guest-ip`
 - Enable `nix.distributedBuilds`
 - Auto-stop the VM after 180 minutes of idle
+
+#### Module Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable` | bool | `false` | Enable darwin-vz-nix VM manager |
+| `cores` | positive int | `4` | Number of CPU cores |
+| `memory` | positive int | `8192` | Memory size in MB |
+| `diskSize` | string | `"100G"` | Disk size (e.g. `"100G"`, `"50G"`) |
+| `rosetta` | bool | `true` | Enable Rosetta 2 for x86_64-linux |
+| `idleTimeout` | positive int | `180` | Idle timeout in minutes |
+| `kernelPath` | string | *(required)* | Path to guest kernel image |
+| `initrdPath` | string | *(required)* | Path to guest initrd |
+| `systemPath` | string | *(required)* | Path to guest system toplevel |
+| `ephemeral` | bool | `false` | Wipe disk on restart |
+| `workingDirectory` | string | `"/var/lib/darwin-vz-nix"` | VM state directory |
+| `maxJobs` | positive int | same as `cores` | Concurrent build jobs |
+| `protocol` | string | `"ssh-ng"` | Build protocol |
+| `supportedFeatures` | list of string | `["kvm", "benchmark", "big-parallel"]` | Builder features |
+| `extraNixOSConfig` | module | `{}` | Reserved for future use (not usable in v0.1.0) |
 
 ## Architecture
 
@@ -123,29 +147,31 @@ This will:
 │  │  └─ Virtualization.framework              │  │
 │  │     ├─ VZLinuxBootLoader (kernel+initrd)  │  │
 │  │     ├─ VZVirtioBlockDevice (disk.img)     │  │
-│  │     ├─ VZNATNetwork (localhost SSH)       │  │
-│  │     ├─ VirtioFS: /nix/store (read-only)  │  │
-│  │     ├─ VirtioFS: Rosetta runtime         │  │
-│  │     └─ VirtioFS: SSH keys                │  │
+│  │     ├─ VZNATNetwork (NAT + DHCP)          │  │
+│  │     ├─ VirtioFS: /nix/store (read-only)   │  │
+│  │     ├─ VirtioFS: Rosetta runtime          │  │
+│  │     └─ VirtioFS: SSH keys                 │  │
 │  └───────────────────────────────────────────┘  │
 │           │           │                         │
-│           │  SSH :31122                         │
+│           │  SSH (guest IP via DHCP)            │
 │           ▼                                     │
 │  ┌───────────────────────────────────────────┐  │
 │  │  NixOS Guest (aarch64-linux)              │  │
 │  │  ├─ nix-daemon (trusted builder)          │  │
-│  │  ├─ /nix/store (overlayfs)               │  │
-│  │  │   lower: host /nix/store (VirtioFS)   │  │
-│  │  │   upper: tmpfs (writable)             │  │
-│  │  ├─ Rosetta 2 binfmt (x86_64-linux)      │  │
-│  │  └─ OpenSSH (key-only auth)              │  │
+│  │  ├─ /nix/store (overlayfs)                │  │
+│  │  │   lower: host /nix/store (VirtioFS)    │  │
+│  │  │   upper: tmpfs (writable)              │  │
+│  │  ├─ Rosetta 2 binfmt (x86_64-linux)       │  │
+│  │  └─ OpenSSH (key-only auth)               │  │
 │  └───────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────┘
 ```
 
+The host discovers the guest IP address from `/var/db/dhcpd_leases` (macOS vmnet DHCP server) and connects directly to guest IP port 22. No port forwarding is used.
+
 ## State Directory
 
-CLI state is stored at `~/.local/share/darwin-vz-nix/`:
+When using the CLI directly, state is stored at `~/.local/share/darwin-vz-nix/`. The nix-darwin module uses `/var/lib/darwin-vz-nix/` by default (configurable via `workingDirectory`).
 
 | File | Purpose |
 |------|---------|
@@ -153,6 +179,7 @@ CLI state is stored at `~/.local/share/darwin-vz-nix/`:
 | `ssh/id_ed25519` | SSH private key (auto-generated) |
 | `ssh/id_ed25519.pub` | SSH public key (shared with guest via VirtioFS) |
 | `ssh/known_hosts` | Guest SSH host key cache |
+| `guest-ip` | Guest IP address (DHCP-discovered) |
 | `vm.pid` | Running VM process ID |
 | `console.log` | VM console output |
 
@@ -174,7 +201,20 @@ swift build
 
 # Run
 swift run darwin-vz-nix --help
+
+# Format Nix files
+nix fmt  # nixfmt-tree
 ```
+
+See [REQUIREMENTS.md](REQUIREMENTS.md) for detailed project requirements.
+
+## CI/CD
+
+GitHub Actions runs on every PR and push to `main`:
+
+- **`nix flake check`** validates all flake outputs on an `aarch64-linux` runner
+- Builds `guest-kernel`, `guest-initrd`, and `guest-system` artifacts
+- Pushes to [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix) binary cache (`takeokunn-darwin-vz-nix`) on pushes to `main`
 
 ## License
 

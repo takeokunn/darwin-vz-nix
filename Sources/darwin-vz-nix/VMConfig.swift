@@ -63,7 +63,7 @@ struct VMConfig {
         self.diskSize = diskSize
         self.kernelURL = kernelURL
         self.initrdURL = initrdURL
-        self.systemURL = systemURL
+        self.systemURL = systemURL?.resolvingSymlinksInPath()
         self.stateDirectory = stateDirectory ?? VMConfig.defaultStateDirectory
         self.rosetta = rosetta
         self.shareNixStore = shareNixStore

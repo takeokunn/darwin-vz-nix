@@ -72,16 +72,15 @@ struct NetworkManager {
 
     /// Discover guest VM IP by polling /var/db/dhcpd_leases for the guest hostname.
     /// macOS's vmnet DHCP server writes lease entries with the hostname reported by the guest.
-    func discoverGuestIP(hostname: String = "darwin-vz-guest", timeout: TimeInterval = 120) throws -> String {
+    func discoverGuestIP(hostname: String = "darwin-vz-guest", timeout: TimeInterval = 120) async throws -> String {
         let leaseFile = "/var/db/dhcpd_leases"
-        let pollInterval: useconds_t = 500_000 // 500ms
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
             if let ip = parseLeaseFile(path: leaseFile, hostname: hostname) {
                 return ip
             }
-            usleep(pollInterval)
+            try await Task.sleep(for: .milliseconds(500))
         }
 
         throw NetworkError.guestIPNotFound

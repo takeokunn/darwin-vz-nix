@@ -14,9 +14,6 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default =
-        pkgs.darwin-vz-nix
-          or (throw "darwin-vz-nix package not found. Add the overlay or use packages.default from the flake.");
       description = "The darwin-vz-nix package to use.";
     };
 
@@ -45,9 +42,9 @@ in
     };
 
     idleTimeout = lib.mkOption {
-      type = lib.types.ints.positive;
+      type = lib.types.ints.unsigned;
       default = 180;
-      description = "Idle timeout in minutes before VM is stopped.";
+      description = "Idle timeout in minutes before VM is stopped. 0 to disable.";
     };
 
     ephemeral = lib.mkOption {
@@ -171,6 +168,7 @@ in
           "--system"
           cfg.systemPath
         ]
+        ++ [ "--share-nix-store" ]
         ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
         ++ lib.optionals (cfg.idleTimeout > 0) [
           "--idle-timeout"

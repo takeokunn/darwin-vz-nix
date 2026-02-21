@@ -37,10 +37,13 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     private var lastActivityTime: Date = Date()
     private var idleCheckTimer: DispatchSourceTimer?
     private let idleTimeoutMinutes: Int
+    private let verbose: Bool
+    private var consolePipe: Pipe?
 
-    init(config: VMConfig) {
+    init(config: VMConfig, verbose: Bool = false) {
         self.config = config
         self.idleTimeoutMinutes = config.idleTimeout
+        self.verbose = verbose
         super.init()
     }
 
@@ -98,17 +101,31 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         // Entropy
         vmConfig.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 
-        // Serial console — write to console.log file and optionally read from stdin
+        // Serial console — write to console.log file and optionally tee to stderr
         FileManager.default.createFile(atPath: config.consoleLogURL.path, contents: nil)
-        let consoleWriteHandle = try FileHandle(forWritingTo: config.consoleLogURL)
+        let consoleLogHandle = try FileHandle(forWritingTo: config.consoleLogURL)
 
-        // Use /dev/null for input when stdin is not a TTY (e.g. backgrounded process)
-        let consoleReadHandle: FileHandle
-        if isatty(STDIN_FILENO) != 0 {
-            consoleReadHandle = FileHandle.standardInput
+        let consoleWriteHandle: FileHandle
+        if verbose {
+            let pipe = Pipe()
+            consolePipe = pipe
+            consoleWriteHandle = pipe.fileHandleForWriting
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if !data.isEmpty {
+                    consoleLogHandle.write(data)
+                    FileHandle.standardError.write(data)
+                }
+            }
         } else {
-            consoleReadHandle = FileHandle(forReadingAtPath: "/dev/null")!
+            consoleWriteHandle = consoleLogHandle
         }
+
+        // Always use /dev/null for serial console input.
+        // The host terminal responds to escape sequences in boot output (DSR etc.),
+        // and those responses leak into the guest's stdin, corrupting shell input.
+        // Console is view-only; interactive access is via SSH.
+        let consoleReadHandle = FileHandle(forReadingAtPath: "/dev/null")!
 
         let serialPortAttachment = VZFileHandleSerialPortAttachment(
             fileHandleForReading: consoleReadHandle,

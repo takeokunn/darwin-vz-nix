@@ -71,6 +71,7 @@
           swiftpm
           swiftformat
           sourcekit-lsp
+          nixfmt-tree
         ];
       };
     };
