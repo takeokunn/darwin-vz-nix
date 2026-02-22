@@ -15,8 +15,12 @@
     isNormalUser = true;
     group = "builder";
     home = "/home/builder";
+    extraGroups = [ "wheel" ];
   };
   users.groups.builder = { };
+
+  # Allow passwordless sudo for wheel group (builder has no password, SSH-key-only)
+  security.sudo.wheelNeedsPassword = false;
 
   # SSH key injection from host via VirtioFS
   fileSystems."/run/ssh-keys" = {
