@@ -43,6 +43,16 @@
     fi
   '';
 
+  # Ensure overlay directories exist on root ext4 filesystem
+  # Required because /nix/.rw-store is a plain directory on root (not a
+  # separate mount), so nothing creates it automatically. mkdir -p is
+  # idempotent, so this is safe on every boot.
+  boot.initrd.postMountCommands = ''
+    mkdir -p /mnt-root/nix/.rw-store/store
+    mkdir -p /mnt-root/nix/.rw-store/work
+    mkdir -p /mnt-root/nix/var/nix/db
+  '';
+
   # LZ4 compression for initrd (legacy format for kernel compatibility)
   boot.initrd.compressor = lib.getExe pkgs.lz4;
   boot.initrd.compressorArgs = [

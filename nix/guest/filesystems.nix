@@ -16,24 +16,11 @@
     neededForBoot = true;
   };
 
-  # Writable upper layer for overlay (tmpfs)
-  fileSystems."/nix/.rw-store" = {
-    fsType = "tmpfs";
-    options = [ "mode=0755" ];
-    neededForBoot = true;
-  };
-
-  # Nix store database on tmpfs to match volatile overlay upper layer
-  # Without this, the DB persists across reboots while tmpfs data is lost,
-  # causing "No such file or directory" errors for .drv files that are
-  # registered in the DB but no longer exist on the filesystem.
-  fileSystems."/nix/var/nix/db" = {
-    fsType = "tmpfs";
-    options = [ "mode=0755" ];
-    neededForBoot = true;
-  };
-
-  # Overlay: merge host's read-only store with writable tmpfs layer
+  # Overlay: merge host's read-only store with disk-backed writable layer
+  # Upper layer uses the root ext4 filesystem (/dev/vda) instead of tmpfs
+  # to prevent OOM during heavy builds (build artifacts go to disk, not RAM).
+  # The initrd creates /nix/.rw-store/{store,work} and /nix/var/nix/db
+  # directories on root via postMountCommands (see boot.nix).
   fileSystems."/nix/store" = {
     fsType = "overlay";
     device = "overlay";
@@ -44,7 +31,6 @@
     ];
     depends = [
       "/nix/.ro-store"
-      "/nix/.rw-store"
     ];
     neededForBoot = true;
   };
