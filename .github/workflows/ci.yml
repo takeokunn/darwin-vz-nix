@@ -21,8 +21,11 @@ jobs:
       - name: Nix Flake Check (Darwin)
         run: nix flake check --print-build-logs --system aarch64-darwin
 
-      - name: Nix Build
-        run: nix build .#darwin-vz-nix --print-build-logs
+      - name: Push darwin binary to Cachix
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          nix build .#darwin-vz-nix -o result-darwin
+          cachix push takeokunn-darwin-vz-nix result-darwin
 
   cachix-push:
     name: Push guest artifacts to Cachix

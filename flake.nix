@@ -76,6 +76,7 @@
 
       # Checks for aarch64-darwin
       checks.${system} = {
+        darwin-vz-nix = darwinVzNix;
         swift-test = darwinVzNix.overrideAttrs (_: {
           name = "darwin-vz-nix-test";
           buildPhase = ''
