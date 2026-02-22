@@ -65,7 +65,7 @@
       "flakes"
     ];
     substituters = [ "https://cache.nixos.org" ];
-    cores = 2;
+    cores = 3;
     max-jobs = 4;
     builders-use-substitutes = true;
   };
