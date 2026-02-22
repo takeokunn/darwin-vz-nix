@@ -218,9 +218,6 @@ nix build .#darwin-vz-nix
 # Format Nix files
 nix fmt  # nixfmt-tree
 ```
-
-See [REQUIREMENTS.md](REQUIREMENTS.md) for detailed project requirements.
-
 ## CI/CD
 
 GitHub Actions runs on every PR and push to `main`:
