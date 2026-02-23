@@ -62,7 +62,8 @@ struct NetworkManager {
 
     // MARK: - Guest IP Discovery
 
-    /// Discover guest VM IP by polling /var/db/dhcpd_leases for the guest hostname.
+    /// Discover guest VM IP by polling /var/db/dhcpd_leases for the guest hostname,
+    /// then verifying the candidate IP via ARP table MAC address check.
     /// macOS's vmnet DHCP server writes lease entries with the hostname reported by the guest.
     func discoverGuestIP(hostname: String = Constants.guestHostname, timeout: TimeInterval = 120, notBefore: Date) async throws -> String {
         let leaseFile = "/var/db/dhcpd_leases"
@@ -71,7 +72,12 @@ struct NetworkManager {
 
         while Date() < deadline {
             if let ip = parseLeaseFile(path: leaseFile, hostname: hostname, notBefore: notBeforeTimestamp) {
-                return ip
+                // Verify the candidate IP belongs to our VM by checking MAC in ARP table.
+                // Stale DHCP leases from previous boots can match the hostname filter,
+                // so we cross-check against the deterministic MAC address.
+                if Self.verifyIPViaARP(ip: ip, expectedMAC: Constants.macAddressString) {
+                    return ip
+                }
             }
             try await Task.sleep(for: .milliseconds(500))
         }
@@ -111,6 +117,52 @@ struct NetworkManager {
         }
 
         return newestIP
+    }
+
+    // MARK: - ARP Verification
+
+    /// Verify an IP address belongs to the expected MAC by checking the ARP table.
+    /// Returns true if the ARP entry exists and the MAC matches.
+    static func verifyIPViaARP(ip: String, expectedMAC: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
+        process.arguments = ["-an", ip]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        // ARP output format: "? (192.168.64.8) at 2:da:72:56:0:1 on bridge100 ..."
+        // "(incomplete)" means no ARP response — the host is unreachable.
+        guard let atRange = output.range(of: " at "),
+              let onRange = output.range(of: " on ", range: atRange.upperBound..<output.endIndex)
+        else {
+            return false
+        }
+        let arpMAC = String(output[atRange.upperBound..<onRange.lowerBound])
+        if arpMAC == "(incomplete)" {
+            return false
+        }
+        return normalizeMAC(arpMAC) == normalizeMAC(expectedMAC)
+    }
+
+    /// Normalize a MAC address for comparison by removing leading zeros from each octet.
+    /// e.g. "02:da:72:56:00:01" → "2:da:72:56:0:1"
+    static func normalizeMAC(_ mac: String) -> String {
+        mac.lowercased()
+            .split(separator: ":")
+            .map { octet in
+                let stripped = String(octet.drop(while: { $0 == "0" }))
+                return stripped.isEmpty ? "0" : stripped
+            }
+            .joined(separator: ":")
     }
 
     private func parseLeaseFile(path: String, hostname: String, notBefore: UInt64) -> String? {

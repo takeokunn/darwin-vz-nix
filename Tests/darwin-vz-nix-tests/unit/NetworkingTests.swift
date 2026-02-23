@@ -101,6 +101,28 @@ struct NetworkingTests {
         #expect(ip == nil)
     }
 
+    // MARK: - normalizeMAC
+
+    @Test("normalizeMAC removes leading zeros from each octet")
+    func normalizeMACRemovesLeadingZeros() {
+        #expect(NetworkManager.normalizeMAC("02:da:72:56:00:01") == "2:da:72:56:0:1")
+    }
+
+    @Test("normalizeMAC handles already-normalized MAC")
+    func normalizeMACAlreadyNormalized() {
+        #expect(NetworkManager.normalizeMAC("2:da:72:56:0:1") == "2:da:72:56:0:1")
+    }
+
+    @Test("normalizeMAC preserves zero octet as '0'")
+    func normalizeMACPreservesZero() {
+        #expect(NetworkManager.normalizeMAC("00:00:00:00:00:00") == "0:0:0:0:0:0")
+    }
+
+    @Test("normalizeMAC is case-insensitive")
+    func normalizeMACCaseInsensitive() {
+        #expect(NetworkManager.normalizeMAC("02:DA:72:56:00:01") == "2:da:72:56:0:1")
+    }
+
     // MARK: - NetworkError.errorDescription
 
     @Test("sshKeyGenerationFailed error description is non-nil and contains exit code")
