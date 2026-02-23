@@ -193,6 +193,110 @@ struct VMConfigTests {
         try config.validate()
     }
 
+    // MARK: - validate kernel/initrd hint detection
+
+    @Test("validate throws initrdNotFound with hint when Image exists in same directory")
+    func validateMissingInitrdWithKernelArtifactHint() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        // Create "Image" (kernel artifact) in the same directory where initrd is expected
+        let imageFile = tempDir.appendingPathComponent("Image")
+        FileManager.default.createFile(atPath: imageFile.path, contents: Data("kernel".utf8))
+
+        // Create a real kernel file in a separate directory
+        let kernel = TestHelpers.createTempFile(content: "kernel")
+        defer { TestHelpers.removeTempItem(at: kernel.deletingLastPathComponent()) }
+
+        let fakeInitrd = tempDir.appendingPathComponent("initrd")
+        let config = VMConfig(
+            cores: 4, memory: 8192, diskSize: "100G",
+            kernelURL: kernel, initrdURL: fakeInitrd
+        )
+
+        do {
+            try config.validate()
+            Issue.record("Expected initrdNotFound to be thrown")
+        } catch let error as VMConfigError {
+            if case let .initrdNotFound(_, hint) = error {
+                #expect(hint != nil)
+                #expect(hint?.contains("Image") == true)
+            } else {
+                Issue.record("Expected initrdNotFound but got \(error)")
+            }
+        }
+    }
+
+    @Test("validate throws kernelNotFound with hint when initrd exists in same directory")
+    func validateMissingKernelWithInitrdArtifactHint() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        // Create "initrd" (initrd artifact) in the same directory where kernel is expected
+        let initrdFile = tempDir.appendingPathComponent("initrd")
+        FileManager.default.createFile(atPath: initrdFile.path, contents: Data("initrd".utf8))
+
+        // Create a real initrd file in a separate directory
+        let initrd = TestHelpers.createTempFile(content: "initrd")
+        defer { TestHelpers.removeTempItem(at: initrd.deletingLastPathComponent()) }
+
+        let fakeKernel = tempDir.appendingPathComponent("Image")
+        let config = VMConfig(
+            cores: 4, memory: 8192, diskSize: "100G",
+            kernelURL: fakeKernel, initrdURL: initrd
+        )
+
+        do {
+            try config.validate()
+            Issue.record("Expected kernelNotFound to be thrown")
+        } catch let error as VMConfigError {
+            if case let .kernelNotFound(_, hint) = error {
+                #expect(hint != nil)
+                #expect(hint?.contains("initrd") == true)
+            } else {
+                Issue.record("Expected kernelNotFound but got \(error)")
+            }
+        }
+    }
+
+    @Test("validate throws initrdNotFound with nil hint when no kernel artifact in directory")
+    func validateMissingInitrdWithoutHint() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        // Create a real kernel file in a separate directory
+        let kernel = TestHelpers.createTempFile(content: "kernel")
+        defer { TestHelpers.removeTempItem(at: kernel.deletingLastPathComponent()) }
+
+        // Point initrdURL to a file in the empty temp directory (no Image file present)
+        let fakeInitrd = tempDir.appendingPathComponent("initrd")
+        let config = VMConfig(
+            cores: 4, memory: 8192, diskSize: "100G",
+            kernelURL: kernel, initrdURL: fakeInitrd
+        )
+
+        do {
+            try config.validate()
+            Issue.record("Expected initrdNotFound to be thrown")
+        } catch let error as VMConfigError {
+            if case let .initrdNotFound(_, hint) = error {
+                #expect(hint == nil)
+            } else {
+                Issue.record("Expected initrdNotFound but got \(error)")
+            }
+        }
+    }
+
+    @Test("error description includes hint when present")
+    func errorDescriptionIncludesHint() throws {
+        let error = VMConfigError.initrdNotFound(
+            URL(fileURLWithPath: "/test/initrd"), hint: "test hint"
+        )
+        let desc = error.errorDescription
+        #expect(desc != nil)
+        #expect(try #require(desc?.contains("test hint")))
+    }
+
     // MARK: - Computed paths
 
     @Test("diskImageURL ends with disk.img")
@@ -322,7 +426,7 @@ struct VMConfigTests {
 
     @Test("kernelNotFound error description is non-nil and contains path")
     func errorDescriptionKernelNotFound() throws {
-        let error = VMConfigError.kernelNotFound(URL(fileURLWithPath: "/test/kernel"))
+        let error = VMConfigError.kernelNotFound(URL(fileURLWithPath: "/test/kernel"), hint: nil)
         let desc = error.errorDescription
         #expect(desc != nil)
         #expect(try #require(desc?.contains("/test/kernel")))
@@ -330,7 +434,7 @@ struct VMConfigTests {
 
     @Test("initrdNotFound error description is non-nil and contains path")
     func errorDescriptionInitrdNotFound() throws {
-        let error = VMConfigError.initrdNotFound(URL(fileURLWithPath: "/test/initrd"))
+        let error = VMConfigError.initrdNotFound(URL(fileURLWithPath: "/test/initrd"), hint: nil)
         let desc = error.errorDescription
         #expect(desc != nil)
         #expect(try #require(desc?.contains("/test/initrd")))

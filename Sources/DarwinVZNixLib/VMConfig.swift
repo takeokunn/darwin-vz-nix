@@ -3,8 +3,8 @@ import Foundation
 enum VMConfigError: LocalizedError {
     case invalidCoreCount(Int)
     case insufficientMemory(UInt64)
-    case kernelNotFound(URL)
-    case initrdNotFound(URL)
+    case kernelNotFound(URL, hint: String?)
+    case initrdNotFound(URL, hint: String?)
     case invalidDiskSize(String)
     case stateDirectoryCreationFailed(String)
 
@@ -14,10 +14,14 @@ enum VMConfigError: LocalizedError {
             return "Invalid CPU core count: \(count). Must be at least 1."
         case let .insufficientMemory(mb):
             return "Insufficient memory: \(mb) MB. Must be at least 512 MB."
-        case let .kernelNotFound(url):
-            return "Kernel image not found at: \(url.path)"
-        case let .initrdNotFound(url):
-            return "Initrd image not found at: \(url.path)"
+        case let .kernelNotFound(url, hint):
+            var msg = "Kernel image not found at: \(url.path)"
+            if let hint { msg += "\nHint: \(hint)" }
+            return msg
+        case let .initrdNotFound(url, hint):
+            var msg = "Initrd image not found at: \(url.path)"
+            if let hint { msg += "\nHint: \(hint)" }
+            return msg
         case let .invalidDiskSize(size):
             return "Invalid disk size format: '\(size)'. Use format like '100G', '512M', or bytes."
         case let .stateDirectoryCreationFailed(path):
@@ -81,8 +85,8 @@ struct VMConfig {
         self.cores = cores
         self.memory = memory
         self.diskSize = diskSize
-        self.kernelURL = kernelURL
-        self.initrdURL = initrdURL
+        self.kernelURL = kernelURL.resolvingSymlinksInPath()
+        self.initrdURL = initrdURL.resolvingSymlinksInPath()
         self.systemURL = systemURL?.resolvingSymlinksInPath()
         self.stateDirectory = stateDirectory ?? VMConfig.defaultStateDirectory
         self.rosetta = rosetta
@@ -128,11 +132,23 @@ struct VMConfig {
         }
 
         if !FileManager.default.fileExists(atPath: kernelURL.path) {
-            throw VMConfigError.kernelNotFound(kernelURL)
+            let dir = kernelURL.deletingLastPathComponent()
+            var hint: String?
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("initrd").path) {
+                hint = "Found 'initrd' in the same directory, which is an initrd artifact.\n"
+                    + "      You may have built guest-initrd instead of guest-kernel into this path."
+            }
+            throw VMConfigError.kernelNotFound(kernelURL, hint: hint)
         }
 
         if !FileManager.default.fileExists(atPath: initrdURL.path) {
-            throw VMConfigError.initrdNotFound(initrdURL)
+            let dir = initrdURL.deletingLastPathComponent()
+            var hint: String?
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("Image").path) {
+                hint = "Found 'Image' in the same directory, which is a kernel artifact.\n"
+                    + "      You may have built guest-kernel instead of guest-initrd into this path."
+            }
+            throw VMConfigError.initrdNotFound(initrdURL, hint: hint)
         }
 
         _ = try VMConfig.parseDiskSize(diskSize)

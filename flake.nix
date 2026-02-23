@@ -112,6 +112,29 @@
           '';
       };
 
+      # Convenience app to build all guest artifacts at once
+      apps.${system}.build-guest-artifacts = {
+        type = "app";
+        program = "${pkgs.writeShellScriptBin "build-guest-artifacts" ''
+          set -euo pipefail
+
+          NIX_FLAGS="--max-jobs 0 --option extra-platforms aarch64-linux --option always-allow-substitutes true"
+
+          echo "Building guest-kernel..."
+          nix build .#packages.aarch64-linux.guest-kernel -o result-kernel $NIX_FLAGS
+          echo "Building guest-initrd..."
+          nix build .#packages.aarch64-linux.guest-initrd -o result-initrd $NIX_FLAGS
+          echo "Building guest-system..."
+          nix build .#packages.aarch64-linux.guest-system -o result-system $NIX_FLAGS
+
+          echo ""
+          echo "All guest artifacts built successfully:"
+          echo "  result-kernel -> $(readlink result-kernel)"
+          echo "  result-initrd -> $(readlink result-initrd)"
+          echo "  result-system -> $(readlink result-system)"
+        ''}/bin/build-guest-artifacts";
+      };
+
       # Formatter
       formatter.${system} = pkgs.nixfmt-tree;
 
