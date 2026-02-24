@@ -142,11 +142,11 @@ struct NetworkManager {
         // ARP output format: "? (192.168.64.8) at 2:da:72:56:0:1 on bridge100 ..."
         // "(incomplete)" means no ARP response — the host is unreachable.
         guard let atRange = output.range(of: " at "),
-              let onRange = output.range(of: " on ", range: atRange.upperBound..<output.endIndex)
+              let onRange = output.range(of: " on ", range: atRange.upperBound ..< output.endIndex)
         else {
             return false
         }
-        let arpMAC = String(output[atRange.upperBound..<onRange.lowerBound])
+        let arpMAC = String(output[atRange.upperBound ..< onRange.lowerBound])
         if arpMAC == "(incomplete)" {
             return false
         }
