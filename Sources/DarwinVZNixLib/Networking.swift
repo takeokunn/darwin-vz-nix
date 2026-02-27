@@ -126,7 +126,7 @@ struct NetworkManager {
     static func verifyIPViaARP(ip: String, expectedMAC: String) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
-        process.arguments = ["-an", ip]
+        process.arguments = ["-n", ip]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
