@@ -9,7 +9,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", "1.5.0"..<"1.6.0"),
         // Required: built-in Testing module has cross-import overlay issues
         // with CommandLineTools-only (no Xcode) setups.
-        .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0"),
+        .package(url: "https://github.com/apple/swift-testing.git", from: "6.2.4"),
     ],
     targets: [
         .target(
