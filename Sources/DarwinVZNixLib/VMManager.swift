@@ -181,20 +181,20 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         vm.delegate = self
         virtualMachine = vm
 
-        try writePIDFile()
-
-        // VZVirtualMachine requires all operations on the queue specified in init.
-        // Swift async/await runs on the cooperative thread pool, which is NOT the VM's queue.
-        // We must dispatch start() to the VM's DispatchQueue explicitly.
-        nonisolated(unsafe) let vmRef = vm
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            queue.async {
-                vmRef.start { result in
-                    switch result {
-                    case .success:
-                        continuation.resume()
-                    case let .failure(error):
-                        continuation.resume(throwing: error)
+        try await withPIDFile {
+            // VZVirtualMachine requires all operations on the queue specified in init.
+            // Swift async/await runs on the cooperative thread pool, which is NOT the VM's queue.
+            // We must dispatch start() to the VM's DispatchQueue explicitly.
+            nonisolated(unsafe) let vmRef = vm
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                queue.async {
+                    vmRef.start { result in
+                        switch result {
+                        case .success:
+                            continuation.resume()
+                        case let .failure(error):
+                            continuation.resume(throwing: error)
+                        }
                     }
                 }
             }
@@ -300,6 +300,18 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     }
 
     // MARK: - PID File Management
+
+    func withPIDFile<T>(_ operation: () async throws -> T) async throws -> T {
+        try writePIDFile()
+
+        do {
+            return try await operation()
+        } catch {
+            removePIDFile()
+            virtualMachine = nil
+            throw error
+        }
+    }
 
     private func writePIDFile() throws {
         let pid = ProcessInfo.processInfo.processIdentifier

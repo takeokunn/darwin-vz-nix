@@ -4,6 +4,10 @@ import Testing
 
 @Suite("VMManager", .tags(.unit))
 struct VMManagerTests {
+    private enum SampleError: Error {
+        case failed
+    }
+
     // MARK: - readPID Tests
 
     @Test("readPID returns correct value from valid PID file")
@@ -68,5 +72,31 @@ struct VMManagerTests {
             #expect(description != nil)
             #expect(try #require(description?.localizedLowercase.contains(keyword.lowercased())))
         }
+    }
+
+    @Test("withPIDFile removes stale PID file when startup work fails")
+    func withPIDFileCleansUpOnFailure() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        let kernel = stateDirectory.appendingPathComponent("Image")
+        let initrd = stateDirectory.appendingPathComponent("initrd")
+        FileManager.default.createFile(atPath: kernel.path, contents: Data("kernel".utf8))
+        FileManager.default.createFile(atPath: initrd.path, contents: Data("initrd".utf8))
+
+        let config = VMConfig(
+            kernelURL: kernel,
+            initrdURL: initrd,
+            stateDirectory: stateDirectory
+        )
+        let manager = VMManager(config: config)
+
+        await #expect(throws: SampleError.self) {
+            try await manager.withPIDFile {
+                throw SampleError.failed
+            }
+        }
+
+        #expect(FileManager.default.fileExists(atPath: config.pidFileURL.path) == false)
     }
 }

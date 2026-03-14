@@ -140,6 +140,7 @@
 
       # Dev shell for Swift development
       devShells.${system}.default = pkgs.mkShell {
+        CPLUS_INCLUDE_PATH = "${pkgs.llvmPackages.libcxx.dev}/include/c++/v1";
         nativeBuildInputs = [
           nurPkgs.swift-bin
           pkgs.swiftformat
