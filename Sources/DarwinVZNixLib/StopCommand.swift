@@ -29,10 +29,10 @@ public struct Stop: AsyncParsableCommand {
 
         let stopSignal: Int32 = force ? SIGKILL : SIGTERM
         let signalName = force ? "SIGKILL" : "SIGTERM"
-        fputs("Sending \(signalName) to VM process (PID: \(pid))...\n", stderr)
+        DaemonLogger.vm.info("Sending \(signalName) to VM process (PID: \(pid))...")
 
         if kill(pid, stopSignal) == 0 {
-            fputs("Signal sent. Waiting for VM to stop...\n", stderr)
+            DaemonLogger.vm.info("Signal sent. Waiting for VM to stop...")
 
             // Wait for process to exit: 2s for SIGKILL, 30s for SIGTERM
             let maxWait: UInt32 = force ? 2_000_000 : 30_000_000
@@ -43,9 +43,23 @@ public struct Stop: AsyncParsableCommand {
             }
 
             if VMManager.isProcessRunning(pid: pid) {
-                fputs("Warning: Process \(pid) still running after \(signalName).\n", stderr)
+                DaemonLogger.vm.warning("Process did not stop after SIGTERM. Sending SIGKILL...")
+                if kill(pid, SIGKILL) == 0 {
+                    // Wait up to 2s for SIGKILL to take effect
+                    var killWaited: UInt32 = 0
+                    while VMManager.isProcessRunning(pid: pid), killWaited < 2_000_000 {
+                        usleep(100_000)
+                        killWaited += 100_000
+                    }
+                    if VMManager.isProcessRunning(pid: pid) {
+                        DaemonLogger.vm.error("Process \(pid) still running after SIGKILL.")
+                    } else {
+                        DaemonLogger.vm.info("VM force-stopped after SIGTERM timeout.")
+                        try? FileManager.default.removeItem(at: pidFileURL)
+                    }
+                }
             } else {
-                fputs("VM stopped.\n", stderr)
+                DaemonLogger.vm.info("VM stopped.")
                 // SIGKILL prevents the target from cleaning up, so we do it here
                 if force {
                     try? FileManager.default.removeItem(at: pidFileURL)
@@ -55,5 +69,9 @@ public struct Stop: AsyncParsableCommand {
             let err = String(cString: strerror(errno))
             throw ValidationError("Failed to send signal to PID \(pid): \(err)")
         }
+
+        // Clean up state files after stop
+        let guestIPFileURL = stateDirectory.appendingPathComponent("guest-ip")
+        try? FileManager.default.removeItem(at: guestIPFileURL)
     }
 }

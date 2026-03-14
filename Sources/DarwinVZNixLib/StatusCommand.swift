@@ -39,7 +39,7 @@ public struct Status: AsyncParsableCommand {
                 let data = try encoder.encode(statusOutput)
                 print(String(data: data, encoding: .utf8) ?? "{}")
             } catch {
-                fputs("Error: Failed to encode status as JSON: \(error.localizedDescription)\n", stderr)
+                DaemonLogger.vm.error("Failed to encode status as JSON: \(error.localizedDescription)")
             }
         } else {
             if isRunning, let pid = pid {

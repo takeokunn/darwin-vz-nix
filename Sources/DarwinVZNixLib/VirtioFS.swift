@@ -44,26 +44,26 @@ enum VirtioFSManager {
             if required {
                 throw VirtioFSError.rosettaNotAvailable
             }
-            fputs("Warning: Rosetta is not supported on this platform. x86_64 builds will not be available.\n", stderr)
+            DaemonLogger.vm.warning("Rosetta is not supported on this platform. x86_64 builds will not be available.")
             return nil
 
         case .notInstalled:
             if required {
                 throw VirtioFSError.rosettaNotInstalled
             }
-            fputs("Warning: Rosetta is not installed. x86_64 builds will not be available.\n", stderr)
-            fputs("Install with: softwareupdate --install-rosetta\n", stderr)
+            DaemonLogger.vm.warning("Rosetta is not installed. x86_64 builds will not be available.")
+            DaemonLogger.vm.info("Install with: softwareupdate --install-rosetta")
             return nil
 
         case .installed:
             let rosettaShare = try VZLinuxRosettaDirectoryShare()
             let fsConfig = VZVirtioFileSystemDeviceConfiguration(tag: Constants.rosettaTag)
             fsConfig.share = rosettaShare
-            fputs("Rosetta 2 enabled for x86_64 binary execution.\n", stderr)
+            DaemonLogger.vm.info("Rosetta 2 enabled for x86_64 binary execution.")
             return fsConfig
 
         @unknown default:
-            fputs("Warning: Unknown Rosetta availability status. Skipping.\n", stderr)
+            DaemonLogger.vm.warning("Unknown Rosetta availability status. Skipping.")
             return nil
         }
     }

@@ -207,12 +207,12 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
                 queue: queue,
                 onIdleShutdown: { [weak self] in
                     guard let self = self else { return }
-                    fputs("Warning: VM idle for \(self.idleTimeoutMinutes) minute(s). Shutting down automatically.\n", stderr)
+                    DaemonLogger.idle.warning("VM idle for \(self.idleTimeoutMinutes) minute(s). Shutting down automatically.")
                     Task {
                         do {
                             try await self.stop(force: false)
                         } catch {
-                            fputs("Warning: Idle shutdown failed: \(error.localizedDescription)\n", stderr)
+                            DaemonLogger.idle.warning("Idle shutdown failed: \(error.localizedDescription)")
                         }
                         Darwin.exit(0)
                     }
@@ -236,6 +236,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
             // The VM runs in-process, so process exit terminates it immediately.
             virtualMachine = nil
             removePIDFile()
+            removeGuestIPFile()
             return
         }
 
@@ -255,19 +256,22 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
         virtualMachine = nil
         removePIDFile()
+        removeGuestIPFile()
     }
 
     // MARK: - VZVirtualMachineDelegate
 
     func virtualMachine(_: VZVirtualMachine, didStopWithError error: Error) {
-        fputs("VM stopped with error: \(error.localizedDescription)\n", stderr)
+        DaemonLogger.vm.error("VM stopped with error: \(error.localizedDescription)")
         removePIDFile()
+        removeGuestIPFile()
         exit(1)
     }
 
     func guestDidStop(_: VZVirtualMachine) {
-        fputs("VM guest has stopped.\n", stderr)
+        DaemonLogger.vm.info("VM guest has stopped.")
         removePIDFile()
+        removeGuestIPFile()
         exit(0)
     }
 
@@ -325,6 +329,10 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
     private func removePIDFile() {
         try? FileManager.default.removeItem(at: config.pidFileURL)
+    }
+
+    private func removeGuestIPFile() {
+        try? FileManager.default.removeItem(at: config.guestIPFileURL)
     }
 
     // MARK: - Static Helpers

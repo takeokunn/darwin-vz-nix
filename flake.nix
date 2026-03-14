@@ -144,6 +144,7 @@
         nativeBuildInputs = [
           nurPkgs.swift-bin
           pkgs.swiftformat
+          pkgs.swiftlint
           pkgs.nixfmt
         ];
         shellHook = ''

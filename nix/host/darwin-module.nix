@@ -30,6 +30,7 @@ let
   ]
   ++ [ "--share-nix-store" ]
   ++ lib.optionals (!cfg.rosetta) [ "--no-rosetta" ]
+  ++ lib.optionals cfg.verbose [ "--verbose" ]
   ++ lib.optionals (cfg.idleTimeout > 0) [
     "--idle-timeout"
     (toString cfg.idleTimeout)
@@ -122,6 +123,12 @@ in
       description = "Features supported by the builder.";
     };
 
+    verbose = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Show VM console output in daemon.log. Increases log volume significantly.";
+    };
+
     extraNixOSConfig = lib.mkOption {
       type = lib.types.deferredModule;
       default = { };
@@ -185,6 +192,15 @@ in
         StandardOutPath = "${cfg.workingDirectory}/daemon.log";
         StandardErrorPath = "${cfg.workingDirectory}/daemon.log";
       };
+    };
+
+    # Log rotation via newsyslog
+    environment.etc."newsyslog.d/darwin-vz-nix.conf" = {
+      text = ''
+        # logfilename                                    mode  count  size   when  flags
+        ${cfg.workingDirectory}/daemon.log                644   5      10240  *     J
+        ${cfg.workingDirectory}/console.log               644   5      10240  *     J
+      '';
     };
 
     # Ensure working directory exists with traversable permissions

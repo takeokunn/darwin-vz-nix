@@ -77,12 +77,12 @@ public struct Start: AsyncParsableCommand {
 
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sigintSource.setEventHandler {
-            fputs("\nReceived SIGINT, shutting down VM...\n", stderr)
+            DaemonLogger.vm.info("Received SIGINT, shutting down VM...")
             Task {
                 do {
                     try await vmManager.stop(force: false)
                 } catch {
-                    fputs("Warning: Graceful shutdown failed: \(error.localizedDescription)\n", stderr)
+                    DaemonLogger.vm.warning("Graceful shutdown failed: \(error.localizedDescription)")
                 }
                 Darwin.exit(0)
             }
@@ -91,12 +91,12 @@ public struct Start: AsyncParsableCommand {
 
         let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         sigtermSource.setEventHandler {
-            fputs("\nReceived SIGTERM, shutting down VM...\n", stderr)
+            DaemonLogger.vm.info("Received SIGTERM, shutting down VM...")
             Task {
                 do {
                     try await vmManager.stop(force: false)
                 } catch {
-                    fputs("Warning: Graceful shutdown failed: \(error.localizedDescription)\n", stderr)
+                    DaemonLogger.vm.warning("Graceful shutdown failed: \(error.localizedDescription)")
                 }
                 Darwin.exit(0)
             }
@@ -105,22 +105,22 @@ public struct Start: AsyncParsableCommand {
 
         Self.cleanStaleLockFiles()
 
-        fputs("Starting NixOS VM (cores: \(cores), memory: \(memory)MB, disk: \(diskSize))...\n", stderr)
+        DaemonLogger.vm.info("Starting NixOS VM (cores: \(cores), memory: \(memory)MB, disk: \(diskSize))...")
 
         let vmStartTime = Date()
         try await vmManager.start()
 
         // Discover guest IP via DHCP lease polling
-        fputs("Waiting for guest IP address...\n", stderr)
+        DaemonLogger.vm.info("Waiting for guest IP address...")
         do {
             let guestIP = try await networkManager.discoverGuestIP(notBefore: vmStartTime)
             try networkManager.writeGuestIP(guestIP)
-            fputs("Guest IP: \(guestIP)\n", stderr)
+            DaemonLogger.vm.info("Guest IP: \(guestIP)")
         } catch {
-            fputs("Warning: Could not discover guest IP: \(error.localizedDescription)\n", stderr)
+            DaemonLogger.vm.warning("Could not discover guest IP: \(error.localizedDescription)")
         }
 
-        fputs("VM is running. Press Ctrl+C to stop.\n", stderr)
+        DaemonLogger.vm.info("VM is running. Press Ctrl+C to stop.")
 
         // Suspend this async task indefinitely. The VM runs on its own queue,
         // and lifecycle is managed by signal handlers (SIGINT/SIGTERM) and
@@ -148,18 +148,12 @@ public struct Start: AsyncParsableCommand {
             process.waitUntilExit()
 
             if process.terminationStatus == 0 {
-                fputs("Cleaned stale lock files from /nix/store.\n", stderr)
+                DaemonLogger.vm.info("Cleaned stale lock files from /nix/store.")
             } else {
-                fputs(
-                    "Warning: Could not clean stale lock files in /nix/store. Run: sudo find /nix/store -maxdepth 1 -name '*.lock' -size 0 -perm 600 -delete\n",
-                    stderr
-                )
+                DaemonLogger.vm.warning("Could not clean stale lock files in /nix/store.")
             }
         } catch {
-            fputs(
-                "Warning: Could not clean stale lock files in /nix/store. Run: sudo find /nix/store -maxdepth 1 -name '*.lock' -size 0 -perm 600 -delete\n",
-                stderr
-            )
+            DaemonLogger.vm.warning("Could not clean stale lock files in /nix/store.")
         }
     }
 }
