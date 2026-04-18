@@ -158,4 +158,60 @@ struct NetworkingTests {
         #expect(desc != nil)
         #expect(try #require(desc?.contains("guest")))
     }
+
+    // MARK: - scanARPTableForMAC parser
+
+    @Test("scanARPTableForMAC returns IP matching our MAC")
+    func scanARPMatchesOurMAC() {
+        let arpOutput = """
+        ? (192.168.64.1) at 5a:41:b9:a0:5e:64 on bridge100 ifscope [ethernet]
+        ? (192.168.64.8) at 2:da:72:56:0:1 on bridge100 ifscope [ethernet]
+        ? (192.168.64.254) at ff:ff:ff:ff:ff:ff on bridge100 ifscope [ethernet]
+        """
+        let ip = NetworkManager.scanARPTableForMAC(arpOutput, expectedMAC: "02:da:72:56:00:01")
+        #expect(ip == "192.168.64.8")
+    }
+
+    @Test("scanARPTableForMAC returns nil when MAC not present")
+    func scanARPNoMatch() {
+        let arpOutput = """
+        ? (192.168.64.1) at 5a:41:b9:a0:5e:64 on bridge100 ifscope [ethernet]
+        """
+        let ip = NetworkManager.scanARPTableForMAC(arpOutput, expectedMAC: "02:da:72:56:00:01")
+        #expect(ip == nil)
+    }
+
+    @Test("scanARPTableForMAC skips incomplete entries")
+    func scanARPSkipsIncomplete() {
+        let arpOutput = """
+        ? (192.168.64.8) at (incomplete) on bridge100 ifscope [ethernet]
+        """
+        let ip = NetworkManager.scanARPTableForMAC(arpOutput, expectedMAC: "02:da:72:56:00:01")
+        #expect(ip == nil)
+    }
+
+    @Test("scanARPTableForMAC handles normalized MAC input")
+    func scanARPNormalizedInput() {
+        let arpOutput = """
+        ? (192.168.64.8) at 02:da:72:56:00:01 on bridge100 ifscope [ethernet]
+        """
+        let ip = NetworkManager.scanARPTableForMAC(arpOutput, expectedMAC: "2:da:72:56:0:1")
+        #expect(ip == "192.168.64.8")
+    }
+
+    @Test("scanARPTableForMAC returns nil for empty input")
+    func scanARPEmpty() {
+        let ip = NetworkManager.scanARPTableForMAC("", expectedMAC: "02:da:72:56:00:01")
+        #expect(ip == nil)
+    }
+
+    // MARK: - guestIPNotFound improved description
+
+    @Test("guestIPNotFound description mentions bootpd and doctor command")
+    func errorDescriptionGuestIPNotFoundMentionsBootpd() throws {
+        let error = NetworkError.guestIPNotFound
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("bootpd"))
+        #expect(desc.contains("darwin-vz-nix doctor"))
+    }
 }

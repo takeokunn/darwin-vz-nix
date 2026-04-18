@@ -113,7 +113,10 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
                 let data = handle.availableData
                 if !data.isEmpty {
                     consoleLogHandle.write(data)
-                    FileHandle.standardError.write(data)
+                    let sanitized = VMManager.stripTerminalRequests(data)
+                    if !sanitized.isEmpty {
+                        FileHandle.standardError.write(sanitized)
+                    }
                 }
             }
         } else {
@@ -348,5 +351,68 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
     static func isProcessRunning(pid: pid_t) -> Bool {
         return kill(pid, 0) == 0
+    }
+
+    @discardableResult
+    static func terminateProcess(pid: pid_t, pidFileURL: URL, force: Bool = false) throws -> Bool {
+        let stopSignal: Int32 = force ? SIGKILL : SIGTERM
+        let signalName = force ? "SIGKILL" : "SIGTERM"
+        DaemonLogger.vm.info("Sending \(signalName) to VM process (PID: \(pid))...")
+
+        guard kill(pid, stopSignal) == 0 else {
+            let err = String(cString: strerror(errno))
+            throw VMManagerError.stopFailed("Failed to send \(signalName) to PID \(pid): \(err)")
+        }
+
+        DaemonLogger.vm.info("Signal sent. Waiting for VM to stop...")
+
+        let maxWait: UInt32 = force ? 2_000_000 : 30_000_000
+        var waited: UInt32 = 0
+        while isProcessRunning(pid: pid), waited < maxWait {
+            usleep(100_000)
+            waited += 100_000
+        }
+
+        if !force, isProcessRunning(pid: pid) {
+            DaemonLogger.vm.warning("Process did not stop after SIGTERM. Sending SIGKILL...")
+            if kill(pid, SIGKILL) == 0 {
+                var killWaited: UInt32 = 0
+                while isProcessRunning(pid: pid), killWaited < 2_000_000 {
+                    usleep(100_000)
+                    killWaited += 100_000
+                }
+                if !isProcessRunning(pid: pid) {
+                    DaemonLogger.vm.info("VM force-stopped after SIGTERM timeout.")
+                }
+            }
+        }
+
+        let stopped = !isProcessRunning(pid: pid)
+
+        if stopped {
+            try? FileManager.default.removeItem(at: pidFileURL)
+            DaemonLogger.vm.info("VM stopped.")
+        } else {
+            DaemonLogger.vm.error("Process \(pid) still running after SIGKILL.")
+        }
+
+        return stopped
+    }
+
+    // MARK: - Console Output Sanitization
+
+    /// Strip ANSI escape sequences that request terminal responses (DSR, DA).
+    /// These cause the host terminal to emit cursor-position reports like ^[[68;1R
+    /// which appear as garbage when --verbose tees console output to stderr.
+    static func stripTerminalRequests(_ data: Data) -> Data {
+        guard var string = String(data: data, encoding: .utf8) else { return data }
+        // CSI sequences: \e[ <params> <final_byte>
+        // DSR requests end with 'n', Device Attributes end with 'c'
+        if let regex = try? NSRegularExpression(pattern: "\u{1b}\\[[0-9;]*[nc]") {
+            string = regex.stringByReplacingMatches(
+                in: string, range: NSRange(string.startIndex..., in: string), withTemplate: ""
+            )
+        }
+        return string.data(using: .utf8) ?? data
     }
 }

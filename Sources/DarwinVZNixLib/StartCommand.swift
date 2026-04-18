@@ -118,6 +118,7 @@ public struct Start: AsyncParsableCommand {
             DaemonLogger.vm.info("Guest IP: \(guestIP)")
         } catch {
             DaemonLogger.vm.warning("Could not discover guest IP: \(error.localizedDescription)")
+            DaemonLogger.vm.warning("VM is running but unreachable via SSH. Run `darwin-vz-nix doctor` for host-side diagnostics.")
         }
 
         DaemonLogger.vm.info("VM is running. Press Ctrl+C to stop.")

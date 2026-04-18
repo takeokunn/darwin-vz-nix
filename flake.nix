@@ -166,6 +166,7 @@
           echo "  nix run .#darwin-vz-nix -- start --kernel ./result-kernel/Image --initrd ./result-initrd/initrd --system ./result-system"
           echo "  nix run .#darwin-vz-nix -- ssh"
           echo "  nix run .#darwin-vz-nix -- stop"
+          echo "  nix run .#darwin-vz-nix -- destroy"
         '';
       };
     };

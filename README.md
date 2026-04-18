@@ -59,6 +59,10 @@ nix run .#darwin-vz-nix -- ssh
 # Stop the VM
 nix run .#darwin-vz-nix -- stop
 nix run .#darwin-vz-nix -- stop --force
+
+# Destroy all VM state (disk, SSH keys, logs)
+nix run .#darwin-vz-nix -- destroy
+nix run .#darwin-vz-nix -- destroy --yes  # skip confirmation
 ```
 
 ### CLI Options
@@ -83,6 +87,9 @@ darwin-vz-nix stop [OPTIONS]
 
 darwin-vz-nix status [OPTIONS]
   --json             Output in JSON format
+
+darwin-vz-nix destroy [OPTIONS]
+  --yes              Skip confirmation prompt
 ```
 
 ### nix-darwin Module
@@ -197,6 +204,54 @@ When using the CLI directly, state is stored at `~/.local/share/darwin-vz-nix/`.
 - **No nested virtualization** — Won't work inside VMs (e.g., GitHub Actions M1 runners)
 - **Mutual exclusion** — Cannot run alongside `nix.linux-builder`
 
+## Troubleshooting
+
+### `darwin-vz-nix ssh` fails after `start` — "Could not discover guest VM IP address"
+
+**Symptom**: The VM boots (`status` reports `running: true`) but `ssh` fails and the `start` log shows a warning that the guest IP could not be discovered within 120 seconds.
+
+**Root cause**: `VZNATNetworkDeviceAttachment` relies on `vmnet.framework` shared mode, which in turn uses the host's on-demand DHCP server at `/usr/libexec/bootpd`. If `bootpd` does not answer the guest's `DHCPDISCOVER` packet, no lease is written to `/var/db/dhcpd_leases` and the host cannot find the guest's IP. darwin-vz-nix also attempts an ARP-table sweep as a fallback, so many cases recover without manual action — but if both paths fail, the host-side DHCP server is the usual culprit.
+
+**Diagnose** (safe to run any time):
+
+```bash
+nix run .#darwin-vz-nix -- doctor
+```
+
+This runs informational checks against the macOS Application Firewall state, `com.apple.bootpd`'s launchd status, host bridge interfaces, the DHCP lease database, and recent `bootpd` log entries. No state is modified.
+
+**Fix** (all macOS versions, ≤14.3 and ≥14.4):
+
+```bash
+# 1. Restart the on-demand DHCP server. bootpd respawns automatically on the next
+#    DHCP request, so nothing needs to be explicitly started.
+sudo killall bootpd
+
+# 2. If the Application Firewall has blocked bootpd, re-add and unblock it.
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --remove /usr/libexec/bootpd
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/libexec/bootpd
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /usr/libexec/bootpd
+
+# 3. If the issue persists, reboot the Mac. This reliably resets any stuck launchd
+#    state in bootpd/vmnet that survives a process-level restart.
+```
+
+> macOS 14.4+ removed `launchctl kickstart -k` for most system services; `killall bootpd` works uniformly across all supported macOS versions ([background](https://www.kevinmcox.com/2024/03/changes-to-launchctl-kickstart-in-macos-14-4/)).
+
+### Managed Macs (MDM)
+
+Firewall edits via `socketfilterfw` are rejected with *"Firewall settings cannot be modified from command line on managed Mac computers."* Ask your MDM administrator to push a firewall configuration profile that allows `/usr/libexec/bootpd`. Until then, only the `killall bootpd` + reboot paths are available.
+
+### macOS 26 Tahoe
+
+Tahoe changed the default vmnet subnet to `192.168.2.0/24` and silently ignores the `Shared_Net_Address` override in `com.apple.vmnet.plist` ([multipass#4383](https://github.com/canonical/multipass/issues/4383), [multipass#4581](https://github.com/canonical/multipass/issues/4581)). If that subnet collides with your home router, there is no user-space override available at the time of writing. The VM will still work, but host-side address conflicts may mask it — consult your router configuration before assuming `bootpd` is at fault.
+
+### References
+
+- [lima-vm/lima#1259](https://github.com/lima-vm/lima/issues/1259) — parallel report against `socket_vmnet`; the remediation transfers to VZ NAT because both paths use the host `bootpd`.
+- [trycua/cua#1007](https://github.com/trycua/cua/issues/1007) — same behaviour reproduced using `VZNATNetworkDeviceAttachment` directly.
+- [tart FAQ](https://tart.run/faq/) — documents the same class of `bootpd` failures for a sibling Swift/Virtualization.framework wrapper.
+
 ## Development
 
 ```bash
@@ -218,6 +273,7 @@ nix build .#darwin-vz-nix
 # Format Nix files
 nix fmt  # nixfmt-tree
 ```
+
 ## CI/CD
 
 GitHub Actions runs on every PR and push to `main`:

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `doctor` subcommand for diagnosing host-side DHCP / `bootpd` / networking issues that block guest IP discovery
+- ARP-table sweep fallback in `discoverGuestIP` — recovers guest IP by deterministic MAC when the DHCP lease file has no matching entry (e.g. when `bootpd` did not answer `DHCPDISCOVER`)
+- `HostInfo` helper with macOS 14.4+ detection and host bridge-interface enumeration
+- Troubleshooting section in README covering `bootpd` failures, the Application Firewall fix, and the macOS 26 Tahoe subnet caveat
 - Structured logging with `DaemonLogger` (OSLog + stderr dual output)
 - Stop command auto-escalation: SIGTERM → SIGKILL after 30s timeout
 - Automatic cleanup of `guest-ip` and `console.log` on VM start/stop
@@ -16,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SwiftLint integration for static analysis
 - Release workflow for automated GitHub Releases on version tags
 - CHANGELOG.md for version history tracking
+
+### Changed
+- `NetworkError.guestIPNotFound` now reports likely host-side causes (`bootpd` not answering, Application Firewall, interface not up) and points users to `darwin-vz-nix doctor` instead of the generic "Is the VM running?" message
+- `start` logs a follow-up warning after IP-discovery timeout directing users to run `darwin-vz-nix doctor`
 
 ## [0.1.0] - 2026-03-14
 
@@ -38,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: `nix flake check` (Swift tests + nixfmt + swiftformat) on macOS
 - CI: automatic Cachix push of guest artifacts on main branch
 - `build-guest-artifacts` convenience app
-- `PID file cleanup on startup failure via `withPIDFile` wrapper
+- PID file cleanup on startup failure via `withPIDFile` wrapper
 - SSH key generation in nix-darwin activation script (before daemon start)
 
 ### Fixed
