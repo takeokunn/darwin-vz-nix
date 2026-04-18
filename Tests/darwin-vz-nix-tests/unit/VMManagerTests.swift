@@ -120,4 +120,119 @@ struct VMManagerTests {
 
         #expect(FileManager.default.fileExists(atPath: config.pidFileURL.path) == false)
     }
+
+    // MARK: - stripTerminalRequests
+
+    @Test("stripTerminalRequests removes DSR sequences")
+    func stripDSR() {
+        let input = Data("hello\u{1B}[6n world".utf8)
+        let output = VMManager.stripTerminalRequests(input)
+        #expect(String(data: output, encoding: .utf8) == "hello world")
+    }
+
+    @Test("stripTerminalRequests removes DA (device attributes) sequences")
+    func stripDA() {
+        let input = Data("before\u{1B}[cafter".utf8)
+        let output = VMManager.stripTerminalRequests(input)
+        #expect(String(data: output, encoding: .utf8) == "beforeafter")
+    }
+
+    @Test("stripTerminalRequests removes parameterized DSR requests like CPR")
+    func stripParameterizedDSR() {
+        let input = Data("pre\u{1B}[12;34npost".utf8)
+        let output = VMManager.stripTerminalRequests(input)
+        #expect(String(data: output, encoding: .utf8) == "prepost")
+    }
+
+    @Test("stripTerminalRequests preserves color/SGR escape sequences")
+    func stripPreservesColor() {
+        let input = Data("\u{1B}[31mred\u{1B}[0m".utf8)
+        let output = VMManager.stripTerminalRequests(input)
+        // Color SGR ends with 'm', not 'n' or 'c', so it must be preserved
+        #expect(String(data: output, encoding: .utf8) == "\u{1B}[31mred\u{1B}[0m")
+    }
+
+    @Test("stripTerminalRequests returns empty data for empty input")
+    func stripEmpty() {
+        let output = VMManager.stripTerminalRequests(Data())
+        #expect(output.isEmpty)
+    }
+
+    @Test("stripTerminalRequests passes plain ASCII text through unchanged")
+    func stripPlainText() {
+        let input = Data("plain ASCII line\n".utf8)
+        let output = VMManager.stripTerminalRequests(input)
+        #expect(output == input)
+    }
+
+    @Test("stripTerminalRequests handles multiple DSR sequences in one buffer")
+    func stripMultipleSequences() {
+        let input = Data("a\u{1B}[6nb\u{1B}[cc".utf8)
+        let output = VMManager.stripTerminalRequests(input)
+        #expect(String(data: output, encoding: .utf8) == "abc")
+    }
+
+    // MARK: - terminateProcess (against real short-lived subprocess)
+
+    @Test("terminateProcess SIGTERM stops a cooperating sleep subprocess and removes pid file")
+    func terminateSleepSIGTERM() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+        let pidFile = tempDir.appendingPathComponent("vm.pid")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["120"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        try "\(process.processIdentifier)".write(to: pidFile, atomically: true, encoding: .utf8)
+
+        defer {
+            if process.isRunning { process.terminate() }
+        }
+
+        let stopped = try VMManager.terminateProcess(pid: process.processIdentifier, pidFileURL: pidFile)
+        #expect(stopped == true)
+        #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
+        #expect(VMManager.isProcessRunning(pid: process.processIdentifier) == false)
+    }
+
+    @Test("terminateProcess force=true kills a sleep subprocess immediately")
+    func terminateSleepForceKill() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+        let pidFile = tempDir.appendingPathComponent("vm.pid")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["120"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        try "\(process.processIdentifier)".write(to: pidFile, atomically: true, encoding: .utf8)
+
+        defer {
+            if process.isRunning { process.terminate() }
+        }
+
+        let stopped = try VMManager.terminateProcess(
+            pid: process.processIdentifier, pidFileURL: pidFile, force: true
+        )
+        #expect(stopped == true)
+        #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
+    }
+
+    @Test("terminateProcess throws stopFailed when pid does not exist")
+    func terminateNonExistentPID() {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+        let pidFile = tempDir.appendingPathComponent("vm.pid")
+
+        // PID 99999 is extremely unlikely to exist on a test host.
+        // kill(99999, SIGTERM) will return ESRCH, which terminateProcess surfaces as stopFailed.
+        #expect(throws: VMManagerError.self) {
+            _ = try VMManager.terminateProcess(pid: 99999, pidFileURL: pidFile)
+        }
+    }
 }
