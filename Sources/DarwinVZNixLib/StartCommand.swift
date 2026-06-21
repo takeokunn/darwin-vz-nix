@@ -3,7 +3,20 @@ import Foundation
 
 public struct Start: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
-        abstract: "Start a NixOS virtual machine"
+        abstract: "Start a NixOS virtual machine",
+        discussion: """
+        Boots a NixOS guest using macOS Virtualization.framework. The kernel, initrd, and \
+        system are aarch64-linux artifacts you build or fetch first:
+
+          nix run .#build-guest-artifacts
+
+        That writes ./result-kernel/Image, ./result-initrd/initrd, and ./result-system, then:
+
+          darwin-vz-nix start --kernel ./result-kernel/Image --initrd ./result-initrd/initrd --system ./result-system
+
+        The VM runs in the foreground; press Ctrl+C (or run 'darwin-vz-nix stop') to shut it \
+        down gracefully. Connect with 'darwin-vz-nix ssh' once it reports a guest IP.
+        """
     )
 
     @Option(name: .long, help: "Number of CPU cores (default: 4)")
@@ -55,14 +68,7 @@ public struct Start: AsyncParsableCommand {
             idleTimeout: idleTimeout
         )
 
-        // Prevent double-start: check PID file before any setup
-        if let existingPID = VMManager.readPID(from: config.pidFileURL),
-           VMManager.isProcessRunning(pid: existingPID)
-        {
-            throw ValidationError(
-                "A VM is already running (PID: \(existingPID)). Stop it first with 'darwin-vz-nix stop'."
-            )
-        }
+        try Self.cleanupRuntimeFilesBeforeStart(config: config)
 
         try config.validate()
         try config.ensureStateDirectory()
@@ -75,35 +81,24 @@ public struct Start: AsyncParsableCommand {
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
 
+        // Both signals funnel into the single shutdown coordinator, which requests
+        // a guest power-off and waits for the guest to actually stop before the
+        // process exits. We deliberately do NOT call Darwin.exit() here: exiting
+        // immediately would kill the in-process VM (and its VirtioFS server) before
+        // the guest finishes syncing, risking data loss on every clean stop.
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sigintSource.setEventHandler {
             DaemonLogger.vm.info("Received SIGINT, shutting down VM...")
-            Task {
-                do {
-                    try await vmManager.stop(force: false)
-                } catch {
-                    DaemonLogger.vm.warning("Graceful shutdown failed: \(error.localizedDescription)")
-                }
-                Darwin.exit(0)
-            }
+            vmManager.beginGracefulShutdown(exitCode: 0)
         }
         sigintSource.resume()
 
         let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         sigtermSource.setEventHandler {
             DaemonLogger.vm.info("Received SIGTERM, shutting down VM...")
-            Task {
-                do {
-                    try await vmManager.stop(force: false)
-                } catch {
-                    DaemonLogger.vm.warning("Graceful shutdown failed: \(error.localizedDescription)")
-                }
-                Darwin.exit(0)
-            }
+            vmManager.beginGracefulShutdown(exitCode: 0)
         }
         sigtermSource.resume()
-
-        Self.cleanStaleLockFiles()
 
         DaemonLogger.vm.info("Starting NixOS VM (cores: \(cores), memory: \(memory)MB, disk: \(diskSize))...")
 
@@ -133,28 +128,21 @@ public struct Start: AsyncParsableCommand {
         for await _ in stream {}
     }
 
-    static func cleanStaleLockFiles() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = [
-            "-n", "find", "/nix/store",
-            "-maxdepth", "1", "-name", "*.lock",
-            "-size", "0", "-perm", "600", "-delete",
-        ]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            if process.terminationStatus == 0 {
-                DaemonLogger.vm.info("Cleaned stale lock files from /nix/store.")
-            } else {
-                DaemonLogger.vm.warning("Could not clean stale lock files in /nix/store.")
+    static func cleanupRuntimeFilesBeforeStart(config: VMConfig) throws {
+        if let existingRecord = VMManager.readPIDRecord(from: config.pidFileURL) {
+            let isRunning = VMManager.isProcessRunning(pid: existingRecord.pid)
+            let matchesRecord = VMManager.processMatchesRecord(
+                pid: existingRecord.pid,
+                expectedExecutablePath: existingRecord.executablePath
+            )
+            if isRunning, matchesRecord {
+                // Already-running is an operational state (exit 3), not a usage error (64).
+                try exitOperational(
+                    "A VM is already running (PID: \(existingRecord.pid)). Stop it first with 'darwin-vz-nix stop'."
+                )
             }
-        } catch {
-            DaemonLogger.vm.warning("Could not clean stale lock files in /nix/store.")
         }
+
+        Status.cleanupStoppedRuntimeFiles(in: config.stateDirectory)
     }
 }

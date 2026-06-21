@@ -2,23 +2,22 @@
 import Foundation
 import Testing
 
-@Suite("VMConfig", .tags(.unit))
 struct VMConfigTests {
     // MARK: - parseDiskSize valid inputs
 
-    @Test("parseDiskSize parses 100G to correct byte value")
+    @Test
     func parseDiskSize100G() throws {
         let result = try VMConfig.parseDiskSize("100G")
         #expect(result == 100 * 1024 * 1024 * 1024)
     }
 
-    @Test("parseDiskSize parses 1T to correct byte value")
+    @Test
     func parseDiskSize1T() throws {
         let result = try VMConfig.parseDiskSize("1T")
         #expect(result == 1024 * 1024 * 1024 * 1024)
     }
 
-    @Test("parseDiskSize parses 512M to correct byte value")
+    @Test
     func parseDiskSize512M() throws {
         let result = try VMConfig.parseDiskSize("512M")
         #expect(result == 512 * 1024 * 1024)
@@ -26,19 +25,19 @@ struct VMConfigTests {
 
     // MARK: - parseDiskSize case insensitive
 
-    @Test("parseDiskSize handles lowercase 100g")
+    @Test
     func parseDiskSizeLowercaseG() throws {
         let result = try VMConfig.parseDiskSize("100g")
         #expect(result == 100 * 1024 * 1024 * 1024)
     }
 
-    @Test("parseDiskSize handles lowercase 1t")
+    @Test
     func parseDiskSizeLowercaseT() throws {
         let result = try VMConfig.parseDiskSize("1t")
         #expect(result == 1024 * 1024 * 1024 * 1024)
     }
 
-    @Test("parseDiskSize handles lowercase 512m")
+    @Test
     func parseDiskSizeLowercaseM() throws {
         let result = try VMConfig.parseDiskSize("512m")
         #expect(result == 512 * 1024 * 1024)
@@ -46,28 +45,28 @@ struct VMConfigTests {
 
     // MARK: - parseDiskSize invalid inputs
 
-    @Test("parseDiskSize throws invalidDiskSize for empty string")
+    @Test
     func parseDiskSizeEmpty() {
         #expect(throws: VMConfigError.self) {
             try VMConfig.parseDiskSize("")
         }
     }
 
-    @Test("parseDiskSize throws invalidDiskSize for non-numeric input")
+    @Test
     func parseDiskSizeNonNumeric() {
         #expect(throws: VMConfigError.self) {
             try VMConfig.parseDiskSize("abc")
         }
     }
 
-    @Test("parseDiskSize throws invalidDiskSize for unknown suffix")
+    @Test
     func parseDiskSizeUnknownSuffix() {
         #expect(throws: VMConfigError.self) {
             try VMConfig.parseDiskSize("100X")
         }
     }
 
-    @Test("parseDiskSize throws invalidDiskSize for negative value")
+    @Test
     func parseDiskSizeNegative() {
         #expect(throws: VMConfigError.self) {
             try VMConfig.parseDiskSize("-1G")
@@ -76,28 +75,35 @@ struct VMConfigTests {
 
     // MARK: - parseDiskSize raw bytes
 
-    @Test("parseDiskSize parses raw bytes without suffix")
+    @Test
     func parseDiskSizeRawBytes() throws {
         let result = try VMConfig.parseDiskSize("1073741824")
         #expect(result == 1_073_741_824)
     }
 
-    @Test("parseDiskSize parses 1024K to correct byte value")
+    @Test
     func parseDiskSize1024K() throws {
         let result = try VMConfig.parseDiskSize("1024K")
         #expect(result == 1024 * 1024)
     }
 
-    @Test("parseDiskSize throws invalidDiskSize for zero value with suffix")
+    @Test
     func parseDiskSizeZeroG() {
         #expect(throws: VMConfigError.self) {
             try VMConfig.parseDiskSize("0G")
         }
     }
 
+    @Test
+    func parseDiskSizeOverflow() {
+        #expect(throws: VMConfigError.self) {
+            try VMConfig.parseDiskSize("\(UInt64.max)T")
+        }
+    }
+
     // MARK: - validate cores
 
-    @Test("validate throws invalidCoreCount for zero cores")
+    @Test
     func validateZeroCores() throws {
         let kernel = TestHelpers.createTempFile(content: "kernel")
         let initrd = TestHelpers.createTempFile(content: "initrd")
@@ -116,7 +122,7 @@ struct VMConfigTests {
 
     // MARK: - validate memory
 
-    @Test("validate throws insufficientMemory for 256 MB")
+    @Test
     func validateInsufficientMemory() throws {
         let kernel = TestHelpers.createTempFile(content: "kernel")
         let initrd = TestHelpers.createTempFile(content: "initrd")
@@ -133,7 +139,7 @@ struct VMConfigTests {
         }
     }
 
-    @Test("validate succeeds with boundary memory of 512 MB")
+    @Test
     func validateBoundaryMemory() throws {
         let kernel = TestHelpers.createTempFile(content: "kernel")
         let initrd = TestHelpers.createTempFile(content: "initrd")
@@ -150,7 +156,7 @@ struct VMConfigTests {
 
     // MARK: - validate kernel/initrd existence
 
-    @Test("validate throws initrdNotFound when kernel exists but initrd is missing")
+    @Test
     func validateMissingInitrd() throws {
         let kernel = TestHelpers.createTempFile(content: "kernel")
         defer { TestHelpers.removeTempItem(at: kernel.deletingLastPathComponent()) }
@@ -164,7 +170,7 @@ struct VMConfigTests {
         }
     }
 
-    @Test("validate throws kernelNotFound for missing kernel file")
+    @Test
     func validateMissingKernel() throws {
         let initrd = TestHelpers.createTempFile(content: "initrd")
         defer { TestHelpers.removeTempItem(at: initrd.deletingLastPathComponent()) }
@@ -178,7 +184,7 @@ struct VMConfigTests {
         }
     }
 
-    @Test("validate succeeds when kernel and initrd exist")
+    @Test
     func validateExistingFiles() throws {
         let kernel = TestHelpers.createTempFile(content: "kernel")
         let initrd = TestHelpers.createTempFile(content: "initrd")
@@ -193,9 +199,65 @@ struct VMConfigTests {
         try config.validate()
     }
 
+    @Test
+    func validateKernelDirectory() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let kernelDir = tempDir.appendingPathComponent("Image", isDirectory: true)
+        let initrd = tempDir.appendingPathComponent("initrd")
+        try FileManager.default.createDirectory(at: kernelDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: initrd.path, contents: Data("initrd".utf8))
+
+        let config = VMConfig(
+            cores: 4, memory: 8192, diskSize: "100G",
+            kernelURL: kernelDir, initrdURL: initrd
+        )
+        #expect(throws: VMConfigError.self) {
+            try config.validate()
+        }
+    }
+
+    @Test
+    func validateSystemMissingInit() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let kernel = tempDir.appendingPathComponent("Image")
+        let initrd = tempDir.appendingPathComponent("initrd")
+        let system = tempDir.appendingPathComponent("system", isDirectory: true)
+        FileManager.default.createFile(atPath: kernel.path, contents: Data("kernel".utf8))
+        FileManager.default.createFile(atPath: initrd.path, contents: Data("initrd".utf8))
+        try FileManager.default.createDirectory(at: system, withIntermediateDirectories: true)
+
+        let config = VMConfig(
+            cores: 4, memory: 8192, diskSize: "100G",
+            kernelURL: kernel, initrdURL: initrd, systemURL: system
+        )
+        #expect(throws: VMConfigError.self) {
+            try config.validate()
+        }
+    }
+
+    @Test
+    func ensureStateDirectoryRejectsFile() throws {
+        let stateFile = TestHelpers.createTempFile(content: "not a directory")
+        defer { TestHelpers.removeTempItem(at: stateFile.deletingLastPathComponent()) }
+
+        let config = VMConfig(
+            kernelURL: URL(fileURLWithPath: "/fake/kernel"),
+            initrdURL: URL(fileURLWithPath: "/fake/initrd"),
+            stateDirectory: stateFile
+        )
+
+        #expect(throws: VMConfigError.self) {
+            try config.ensureStateDirectory()
+        }
+    }
+
     // MARK: - validate kernel/initrd hint detection
 
-    @Test("validate throws initrdNotFound with hint when Image exists in same directory")
+    @Test
     func validateMissingInitrdWithKernelArtifactHint() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -227,7 +289,7 @@ struct VMConfigTests {
         }
     }
 
-    @Test("validate throws kernelNotFound with hint when initrd exists in same directory")
+    @Test
     func validateMissingKernelWithInitrdArtifactHint() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -259,7 +321,7 @@ struct VMConfigTests {
         }
     }
 
-    @Test("validate throws initrdNotFound with nil hint when no kernel artifact in directory")
+    @Test
     func validateMissingInitrdWithoutHint() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -287,19 +349,18 @@ struct VMConfigTests {
         }
     }
 
-    @Test("error description includes hint when present")
+    @Test
     func errorDescriptionIncludesHint() throws {
         let error = VMConfigError.initrdNotFound(
             URL(fileURLWithPath: "/test/initrd"), hint: "test hint"
         )
-        let desc = error.errorDescription
-        #expect(desc != nil)
-        #expect(try #require(desc?.contains("test hint")))
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("test hint"))
     }
 
     // MARK: - Computed paths
 
-    @Test("diskImageURL ends with disk.img")
+    @Test
     func diskImageURLPath() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let config = VMConfig(
@@ -311,7 +372,7 @@ struct VMConfigTests {
         #expect(config.diskImageURL.path.hasPrefix(stateDir.path))
     }
 
-    @Test("pidFileURL ends with vm.pid")
+    @Test
     func pidFileURLPath() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let config = VMConfig(
@@ -322,7 +383,7 @@ struct VMConfigTests {
         #expect(config.pidFileURL.lastPathComponent == "vm.pid")
     }
 
-    @Test("consoleLogURL ends with console.log")
+    @Test
     func consoleLogURLPath() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let config = VMConfig(
@@ -333,7 +394,7 @@ struct VMConfigTests {
         #expect(config.consoleLogURL.lastPathComponent == "console.log")
     }
 
-    @Test("guestIPFileURL ends with guest-ip")
+    @Test
     func guestIPFileURLPath() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let config = VMConfig(
@@ -344,7 +405,7 @@ struct VMConfigTests {
         #expect(config.guestIPFileURL.lastPathComponent == "guest-ip")
     }
 
-    @Test("sshKeyURL path contains ssh/id_ed25519")
+    @Test
     func sshKeyURLPath() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let config = VMConfig(
@@ -355,7 +416,7 @@ struct VMConfigTests {
         #expect(config.sshKeyURL.path.hasSuffix("/ssh/id_ed25519"))
     }
 
-    @Test("sshDirectory path ends with ssh")
+    @Test
     func sshDirectoryPath() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let config = VMConfig(
@@ -368,19 +429,19 @@ struct VMConfigTests {
 
     // MARK: - defaultStateDirectory and defaultPIDFileURL
 
-    @Test("defaultStateDirectory ends with .local/share/darwin-vz-nix")
+    @Test
     func defaultStateDirectoryPath() {
         #expect(VMConfig.defaultStateDirectory.path.hasSuffix(".local/share/darwin-vz-nix"))
     }
 
-    @Test("defaultPIDFileURL ends with vm.pid")
+    @Test
     func defaultPIDFileURLPath() {
         #expect(VMConfig.defaultPIDFileURL.lastPathComponent == "vm.pid")
     }
 
     // MARK: - Static path helpers
 
-    @Test("sshKeyURL(for:) produces correct path")
+    @Test
     func staticSSHKeyURL() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let url = VMConfig.sshKeyURL(for: stateDir)
@@ -388,7 +449,7 @@ struct VMConfigTests {
         #expect(url.path.hasPrefix(stateDir.path))
     }
 
-    @Test("sshDirectory(for:) produces correct path")
+    @Test
     func staticSSHDirectory() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let url = VMConfig.sshDirectory(for: stateDir)
@@ -396,7 +457,7 @@ struct VMConfigTests {
         #expect(url.path.hasPrefix(stateDir.path))
     }
 
-    @Test("guestIPFileURL(for:) produces correct path")
+    @Test
     func staticGuestIPFileURL() {
         let stateDir = URL(fileURLWithPath: "/tmp/test-state")
         let url = VMConfig.guestIPFileURL(for: stateDir)
@@ -406,53 +467,47 @@ struct VMConfigTests {
 
     // MARK: - VMConfigError.errorDescription
 
-    @Test("invalidCoreCount error description is non-nil and contains core count")
+    @Test
     func errorDescriptionInvalidCoreCount() throws {
         let error = VMConfigError.invalidCoreCount(0)
-        let desc = error.errorDescription
-        #expect(desc != nil)
-        #expect(try #require(desc?.contains("0")))
-        #expect(try #require(desc?.contains("core")))
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("0"))
+        #expect(desc.contains("core"))
     }
 
-    @Test("insufficientMemory error description is non-nil and contains memory value")
+    @Test
     func errorDescriptionInsufficientMemory() throws {
         let error = VMConfigError.insufficientMemory(256)
-        let desc = error.errorDescription
-        #expect(desc != nil)
-        #expect(try #require(desc?.contains("256")))
-        #expect(try #require(desc?.contains("memory")))
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("256"))
+        #expect(desc.contains("memory"))
     }
 
-    @Test("kernelNotFound error description is non-nil and contains path")
+    @Test
     func errorDescriptionKernelNotFound() throws {
         let error = VMConfigError.kernelNotFound(URL(fileURLWithPath: "/test/kernel"), hint: nil)
-        let desc = error.errorDescription
-        #expect(desc != nil)
-        #expect(try #require(desc?.contains("/test/kernel")))
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("/test/kernel"))
     }
 
-    @Test("initrdNotFound error description is non-nil and contains path")
+    @Test
     func errorDescriptionInitrdNotFound() throws {
         let error = VMConfigError.initrdNotFound(URL(fileURLWithPath: "/test/initrd"), hint: nil)
-        let desc = error.errorDescription
-        #expect(desc != nil)
-        #expect(try #require(desc?.contains("/test/initrd")))
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("/test/initrd"))
     }
 
-    @Test("invalidDiskSize error description is non-nil and contains size string")
+    @Test
     func errorDescriptionInvalidDiskSize() throws {
         let error = VMConfigError.invalidDiskSize("bad")
-        let desc = error.errorDescription
-        #expect(desc != nil)
-        #expect(try #require(desc?.contains("bad")))
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("bad"))
     }
 
-    @Test("stateDirectoryCreationFailed error description is non-nil and contains path")
+    @Test
     func errorDescriptionStateDirectoryCreationFailed() throws {
         let error = VMConfigError.stateDirectoryCreationFailed("/failed/path")
-        let desc = error.errorDescription
-        #expect(desc != nil)
-        #expect(try #require(desc?.contains("/failed/path")))
+        let desc = try #require(error.errorDescription)
+        #expect(desc.contains("/failed/path"))
     }
 }

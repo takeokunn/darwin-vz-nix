@@ -2,15 +2,14 @@ import ArgumentParser
 @testable import DarwinVZNixLib
 import Testing
 
-@Suite("DoctorCommand", .tags(.unit))
 struct DoctorCommandTests {
-    @Test("default parsing with no arguments succeeds")
+    @Test
     func parsingNoArgs() throws {
         _ = try Doctor.parse([])
     }
 
-    @Test("configuration abstract is non-empty and mentions diagnosis")
-    func abstract() {
+    @Test
+    func testAbstract() {
         #expect(!Doctor.configuration.abstract.isEmpty)
         let lowered = Doctor.configuration.abstract.lowercased()
         // The abstract should hint at diagnostic purpose
@@ -20,10 +19,50 @@ struct DoctorCommandTests {
         #expect(mentionsDiagnostic)
     }
 
-    @Test("Doctor rejects unknown flags")
+    @Test
     func rejectsUnknownFlags() {
         #expect(throws: Error.self) {
             _ = try Doctor.parse(["--nonexistent-flag"])
         }
+    }
+
+    @Test
+    func runProcessDrainsLargeStdout() {
+        let result = Doctor.runProcess(
+            "/usr/bin/perl",
+            ["-e", "print \"x\" x 200000"],
+            useSudo: false,
+            timeout: 5
+        )
+
+        #expect(result.exit == 0)
+        #expect(result.stdout.count == 200_000)
+        #expect(result.stderr.isEmpty)
+    }
+
+    @Test
+    func runProcessDrainsLargeStdoutAndStderr() {
+        let result = Doctor.runProcess(
+            "/usr/bin/perl",
+            ["-e", "print STDOUT \"x\" x 200000; print STDERR \"y\" x 200000"],
+            useSudo: false,
+            timeout: 5
+        )
+
+        #expect(result.exit == 0)
+        #expect(result.stdout.count == 200_000)
+        #expect(result.stderr.count == 200_000)
+    }
+
+    @Test
+    func runProcessTimeout() {
+        let result = Doctor.runProcess(
+            "/bin/sleep",
+            ["5"],
+            useSudo: false,
+            timeout: 0.1
+        )
+
+        #expect(result.exit == -2)
     }
 }

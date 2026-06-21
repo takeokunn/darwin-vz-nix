@@ -6,13 +6,9 @@
     enable = true;
     networks."10-virtio" = {
       matchConfig.Driver = "virtio_net";
-      networkConfig = {
-        DHCP = "yes";
-        DNS = [
-          "8.8.8.8"
-          "8.8.4.4"
-        ];
-      };
+      # Use DNS provided by the NAT DHCP server rather than hardcoding public
+      # resolvers; this respects the host's network/split-DNS configuration.
+      networkConfig.DHCP = "yes";
       # Explicitly send hostname in DHCP requests to ensure macOS's vmnet
       # DHCP server records it in /var/db/dhcpd_leases. This enables the
       # host to discover the guest IP by matching the hostname.

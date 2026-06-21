@@ -2,9 +2,9 @@
 import Foundation
 import Testing
 
-@Suite("VMConfig Integration", .tags(.integration))
+@Suite(.tags(.integration))
 struct VMConfigIntegrationTests {
-    @Test("ensureStateDirectory creates directory on disk")
+    @Test
     func ensureStateDirectoryCreatesDirectory() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -25,7 +25,7 @@ struct VMConfigIntegrationTests {
         #expect(isDirectory.boolValue)
     }
 
-    @Test("ensureStateDirectory sets 0o755 permissions")
+    @Test
     func ensureStateDirectorySetsPermissions() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -45,7 +45,7 @@ struct VMConfigIntegrationTests {
         #expect(posix == Int(0o755))
     }
 
-    @Test("ensureStateDirectory is idempotent")
+    @Test
     func ensureStateDirectoryIdempotent() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }

@@ -24,8 +24,16 @@ public struct Status: AsyncParsableCommand {
         let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
         let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
-        let pid = VMManager.readPID(from: pidFileURL)
-        let isRunning = pid.map { VMManager.isProcessRunning(pid: $0) } ?? false
+        let hasPIDFile = FileManager.default.fileExists(atPath: pidFileURL.path)
+        let record = VMManager.readPIDRecord(from: pidFileURL)
+        let pid = record?.pid
+        let isRunning = record.map {
+            VMManager.isProcessRunning(pid: $0.pid)
+                && VMManager.processMatchesRecord(pid: $0.pid, expectedExecutablePath: $0.executablePath)
+        } ?? false
+        if (record != nil && !isRunning) || (record == nil && hasPIDFile) {
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+        }
 
         if json {
             let statusOutput = VMStatusOutput(
@@ -35,14 +43,12 @@ public struct Status: AsyncParsableCommand {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            do {
-                let data = try encoder.encode(statusOutput)
-                print(String(data: data, encoding: .utf8) ?? "{}")
-            } catch {
-                DaemonLogger.vm.error("Failed to encode status as JSON: \(error.localizedDescription)")
-            }
+            // Propagate encode failures rather than silently printing nothing:
+            // scripts consuming --json must be able to tell success from failure.
+            let data = try encoder.encode(statusOutput)
+            print(String(data: data, encoding: .utf8) ?? "{}")
         } else {
-            if isRunning, let pid = pid {
+            if isRunning, let pid {
                 print("VM Status: Running")
                 print("PID: \(pid)")
             } else {
@@ -53,5 +59,10 @@ public struct Status: AsyncParsableCommand {
             }
             print("State Directory: \(stateDirectory.path)")
         }
+    }
+
+    static func cleanupStoppedRuntimeFiles(in stateDirectory: URL) {
+        try? FileManager.default.removeItem(at: stateDirectory.appendingPathComponent("vm.pid"))
+        try? FileManager.default.removeItem(at: stateDirectory.appendingPathComponent("guest-ip"))
     }
 }

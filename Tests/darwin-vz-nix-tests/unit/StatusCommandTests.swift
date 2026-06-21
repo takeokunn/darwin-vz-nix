@@ -3,9 +3,8 @@ import ArgumentParser
 import Foundation
 import Testing
 
-@Suite("StatusCommand", .tags(.unit))
 struct StatusCommandTests {
-    @Test("VMStatusOutput JSON encode/decode roundtrip for running VM")
+    @Test
     func jsonRoundtripRunning() throws {
         let original = VMStatusOutput(running: true, pid: 1234, stateDirectory: "/tmp/test")
         let encoder = JSONEncoder()
@@ -17,7 +16,7 @@ struct StatusCommandTests {
         #expect(decoded.stateDirectory == "/tmp/test")
     }
 
-    @Test("VMStatusOutput JSON encode/decode roundtrip for stopped VM")
+    @Test
     func jsonRoundtripStopped() throws {
         let original = VMStatusOutput(running: false, pid: nil, stateDirectory: "/tmp/test")
         let encoder = JSONEncoder()
@@ -28,7 +27,7 @@ struct StatusCommandTests {
         #expect(decoded.pid == nil)
     }
 
-    @Test("VMStatusOutput JSON encode/decode for running VM with specific stateDirectory")
+    @Test
     func jsonRunningWithStateDirectory() throws {
         let original = VMStatusOutput(running: true, pid: 42, stateDirectory: "/var/lib/vm")
         let encoder = JSONEncoder()
@@ -40,15 +39,65 @@ struct StatusCommandTests {
         #expect(decoded.stateDirectory == "/var/lib/vm")
     }
 
-    @Test("default parsing sets json to false")
+    @Test
     func defaultJsonIsFalse() throws {
         let cmd = try Status.parse([])
         #expect(cmd.json == false)
     }
 
-    @Test("parsing with --json sets json to true")
+    @Test
     func jsonFlag() throws {
         let cmd = try Status.parse(["--json"])
         #expect(cmd.json == true)
+    }
+
+    @Test
+    func jsonCleansStaleRuntimeFiles() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        let pidFile = stateDirectory.appendingPathComponent("vm.pid")
+        let guestIPFile = stateDirectory.appendingPathComponent("guest-ip")
+        try "999999".write(to: pidFile, atomically: true, encoding: .utf8)
+        try "192.0.2.10".write(to: guestIPFile, atomically: true, encoding: .utf8)
+
+        var cmd = try Status.parse(["--json", "--state-dir", stateDirectory.path])
+        try await cmd.run()
+
+        #expect(!FileManager.default.fileExists(atPath: pidFile.path))
+        #expect(!FileManager.default.fileExists(atPath: guestIPFile.path))
+    }
+
+    @Test
+    func jsonCleansInvalidPIDFile() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        let pidFile = stateDirectory.appendingPathComponent("vm.pid")
+        let guestIPFile = stateDirectory.appendingPathComponent("guest-ip")
+        try "not-a-pid".write(to: pidFile, atomically: true, encoding: .utf8)
+        try "192.0.2.10".write(to: guestIPFile, atomically: true, encoding: .utf8)
+
+        var cmd = try Status.parse(["--json", "--state-dir", stateDirectory.path])
+        try await cmd.run()
+
+        #expect(!FileManager.default.fileExists(atPath: pidFile.path))
+        #expect(!FileManager.default.fileExists(atPath: guestIPFile.path))
+    }
+
+    @Test
+    func testCleanupStoppedRuntimeFiles() throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        let pidFile = stateDirectory.appendingPathComponent("vm.pid")
+        let guestIPFile = stateDirectory.appendingPathComponent("guest-ip")
+        try "999999".write(to: pidFile, atomically: true, encoding: .utf8)
+        try "192.0.2.10".write(to: guestIPFile, atomically: true, encoding: .utf8)
+
+        Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+
+        #expect(!FileManager.default.fileExists(atPath: pidFile.path))
+        #expect(!FileManager.default.fileExists(atPath: guestIPFile.path))
     }
 }

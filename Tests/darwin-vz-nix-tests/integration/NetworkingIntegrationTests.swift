@@ -2,11 +2,11 @@
 import Foundation
 import Testing
 
-@Suite("Networking Integration", .tags(.integration))
+@Suite(.tags(.integration))
 struct NetworkingIntegrationTests {
     // MARK: - Guest IP Roundtrip
 
-    @Test("writeGuestIP then readGuestIP returns same IP")
+    @Test
     func guestIPRoundtrip() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -17,7 +17,20 @@ struct NetworkingIntegrationTests {
         #expect(ip == "192.168.64.2")
     }
 
-    @Test("readGuestIP throws guestIPNotFound for non-existent file")
+    @Test
+    func writeGuestIPCreatesStateDirectory() throws {
+        let parentDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: parentDir) }
+
+        let stateDir = parentDir.appendingPathComponent("state", isDirectory: true)
+        let manager = NetworkManager(stateDirectory: stateDir)
+        try manager.writeGuestIP("192.168.64.2")
+
+        #expect(FileManager.default.fileExists(atPath: stateDir.path))
+        #expect(try manager.readGuestIP() == "192.168.64.2")
+    }
+
+    @Test
     func readGuestIPNonExistent() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -30,7 +43,7 @@ struct NetworkingIntegrationTests {
 
     // MARK: - SSH Key Generation
 
-    @Test("ensureSSHKeys creates key pair files")
+    @Test
     func ensureSSHKeysCreatesKeyPair() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -44,7 +57,7 @@ struct NetworkingIntegrationTests {
         #expect(FileManager.default.fileExists(atPath: publicKeyPath))
     }
 
-    @Test("ensureSSHKeys is idempotent and does not overwrite existing keys")
+    @Test
     func ensureSSHKeysIdempotent() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -61,7 +74,29 @@ struct NetworkingIntegrationTests {
         #expect(firstContent == secondContent)
     }
 
-    @Test("ensureSSHKeys generates ed25519 public key")
+    @Test
+    func ensureSSHKeysRepairsMissingPublicKey() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let manager = NetworkManager(stateDirectory: tempDir)
+        try manager.ensureSSHKeys()
+
+        let privateKeyURL = VMConfig.sshKeyURL(for: tempDir)
+        let publicKeyURL = URL(fileURLWithPath: privateKeyURL.path + ".pub")
+        let privateKey = try String(contentsOf: privateKeyURL, encoding: .utf8)
+        try FileManager.default.removeItem(at: publicKeyURL)
+
+        try manager.ensureSSHKeys()
+
+        #expect(FileManager.default.fileExists(atPath: publicKeyURL.path))
+        let repairedPrivateKey = try String(contentsOf: privateKeyURL, encoding: .utf8)
+        let repairedPublicKey = try String(contentsOf: publicKeyURL, encoding: .utf8)
+        #expect(repairedPrivateKey == privateKey)
+        #expect(repairedPublicKey.hasPrefix("ssh-ed25519"))
+    }
+
+    @Test
     func ensureSSHKeysKeyFormat() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }

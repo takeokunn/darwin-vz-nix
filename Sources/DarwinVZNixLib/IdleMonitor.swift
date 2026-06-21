@@ -2,23 +2,29 @@ import Foundation
 
 /// Monitors VM idle state by checking for active SSH connections.
 /// Triggers a shutdown callback when the VM has been idle for the configured timeout.
-class IdleMonitor {
-    private var lastActivityTime: Date = .init()
-    private var idleCheckTimer: DispatchSourceTimer?
+///
+/// All state and the (potentially blocking) `lsof` activity probe run on a private
+/// serial queue, never on the VM's queue — so polling can never stall VM operations.
+final class IdleMonitor {
     private let timeoutMinutes: Int
     private let guestIPFileURL: URL
-    private let queue: DispatchQueue
     private let onIdleShutdown: () -> Void
+
+    /// Private serial queue for the timer, activity checks, and all mutable state.
+    private let queue = DispatchQueue(label: "com.darwin-vz-nix.idle-monitor")
+    private var idleCheckTimer: DispatchSourceTimer?
+    private var lastActivityTime = Date()
+    /// One-shot guard: ensures the shutdown callback fires at most once and that
+    /// the timer is cancelled before we hand off to the shutdown coordinator.
+    private var shutdownRequested = false
 
     init(
         timeoutMinutes: Int,
         guestIPFileURL: URL,
-        queue: DispatchQueue,
         onIdleShutdown: @escaping () -> Void
     ) {
         self.timeoutMinutes = timeoutMinutes
         self.guestIPFileURL = guestIPFileURL
-        self.queue = queue
         self.onIdleShutdown = onIdleShutdown
     }
 
@@ -26,20 +32,34 @@ class IdleMonitor {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 30, repeating: 30)
         timer.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            _ = self.checkActivity()
-            let elapsed = Date().timeIntervalSince(self.lastActivityTime)
-            if elapsed >= Double(self.timeoutMinutes) * 60.0 {
-                self.onIdleShutdown()
+            guard let self, !shutdownRequested else { return }
+            if checkActivity() {
+                lastActivityTime = Date()
+            }
+            if Self.shouldShutdown(lastActivity: lastActivityTime, now: Date(), timeoutMinutes: timeoutMinutes) {
+                shutdownRequested = true
+                idleCheckTimer?.cancel()
+                idleCheckTimer = nil
+                onIdleShutdown()
             }
         }
-        timer.resume()
         idleCheckTimer = timer
+        timer.resume()
     }
 
     func stop() {
-        idleCheckTimer?.cancel()
-        idleCheckTimer = nil
+        queue.async { [weak self] in
+            guard let self else { return }
+            shutdownRequested = true
+            idleCheckTimer?.cancel()
+            idleCheckTimer = nil
+        }
+    }
+
+    /// Pure idle decision, separated from timers and I/O for unit testing.
+    static func shouldShutdown(lastActivity: Date, now: Date, timeoutMinutes: Int) -> Bool {
+        guard timeoutMinutes > 0 else { return false }
+        return now.timeIntervalSince(lastActivity) >= Double(timeoutMinutes) * 60.0
     }
 
     private func checkActivity() -> Bool {
@@ -69,10 +89,6 @@ class IdleMonitor {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
 
-        if output.contains("ESTABLISHED") {
-            lastActivityTime = Date()
-            return true
-        }
-        return false
+        return output.contains("ESTABLISHED")
     }
 }

@@ -9,13 +9,13 @@ enum NetworkError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .sshKeyGenerationFailed(status):
-            return "SSH key generation failed with exit code: \(status)"
+            "SSH key generation failed with exit code: \(status)"
         case let .sshConnectionFailed(status):
-            return "SSH connection failed with exit code: \(status)"
+            "SSH connection failed with exit code: \(status)"
         case let .sshKeyNotFound(path):
-            return "SSH key not found at: \(path)"
+            "SSH key not found at: \(path)"
         case .guestIPNotFound:
-            return """
+            """
             Could not discover guest VM IP address after polling DHCP leases and the ARP table.
             Likely causes on the macOS host:
               1. bootpd (the DHCP server behind vmnet) did not answer DHCPDISCOVER — try: sudo killall bootpd
@@ -34,19 +34,76 @@ struct NetworkManager {
         VMConfig.sshKeyURL(for: stateDirectory)
     }
 
+    /// Deterministic per-state-directory MAC, matching the one assigned to the
+    /// VM's network device. Discovery keys on this so two VMs never cross-match.
+    var macAddress: String {
+        VMConfig.macAddress(for: stateDirectory)
+    }
+
+    /// True iff `string` is a well-formed IPv4 dotted-quad. Used to reject
+    /// garbage from lease/ARP parsing before it becomes an SSH target.
+    static func isValidIPv4(_ string: String) -> Bool {
+        var addr = in_addr()
+        return string.withCString { inet_pton(AF_INET, $0, &addr) } == 1
+    }
+
+    /// Best-effort TCP liveness probe used to validate an ARP-swept candidate
+    /// before trusting it: a stale ARP entry from a prior boot won't answer.
+    static func isTCPPortOpen(ip: String, port: Int, timeoutSeconds: Int = 1) -> Bool {
+        guard isValidIPv4(ip) else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+        process.arguments = ["-z", "-G", String(timeoutSeconds), "-w", String(timeoutSeconds), ip, String(port)]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+        return process.terminationStatus == 0
+    }
+
     func ensureSSHKeys() throws {
         let sshDir = VMConfig.sshDirectory(for: stateDirectory)
+        let publicKeyPath = URL(fileURLWithPath: sshKeyPath.path + ".pub")
+        let fm = FileManager.default
 
-        try FileManager.default.createDirectory(
+        try fm.createDirectory(
             at: sshDir,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sshDir.path)
 
-        if FileManager.default.fileExists(atPath: sshKeyPath.path) {
+        let hasPrivateKey = fm.fileExists(atPath: sshKeyPath.path)
+        let hasPublicKey = fm.fileExists(atPath: publicKeyPath.path)
+
+        if hasPrivateKey, hasPublicKey {
+            try setSSHKeyPermissions(publicKeyPath: publicKeyPath)
             return
         }
 
+        if hasPrivateKey {
+            do {
+                let publicKey = try derivePublicKey()
+                try "\(publicKey) builder@darwin-vz-nix\n".write(to: publicKeyPath, atomically: true, encoding: .utf8)
+                try setSSHKeyPermissions(publicKeyPath: publicKeyPath)
+                return
+            } catch {
+                try? fm.removeItem(at: sshKeyPath)
+                try? fm.removeItem(at: publicKeyPath)
+            }
+        } else if hasPublicKey {
+            try? fm.removeItem(at: publicKeyPath)
+        }
+
+        try generateSSHKeyPair()
+        try setSSHKeyPermissions(publicKeyPath: publicKeyPath)
+    }
+
+    private func generateSSHKeyPair() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
         process.arguments = [
@@ -67,6 +124,34 @@ struct NetworkManager {
         }
     }
 
+    private func derivePublicKey() throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+        process.arguments = ["-y", "-f", sshKeyPath.path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw NetworkError.sshKeyGenerationFailed(process.terminationStatus)
+        }
+
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let publicKey = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !publicKey.isEmpty else {
+            throw NetworkError.sshKeyGenerationFailed(process.terminationStatus)
+        }
+        return publicKey
+    }
+
+    private func setSSHKeyPermissions(publicKeyPath: URL) throws {
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sshKeyPath.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: publicKeyPath.path)
+    }
+
     // MARK: - Guest IP Discovery
 
     /// Discover guest VM IP by polling /var/db/dhcpd_leases for the guest hostname,
@@ -76,21 +161,38 @@ struct NetworkManager {
         let leaseFile = "/var/db/dhcpd_leases"
         let deadline = Date().addingTimeInterval(timeout)
         let notBeforeTimestamp = UInt64(notBefore.timeIntervalSince1970)
+        let mac = macAddress
+
+        var consecutiveLeaseMisses = 0
+        var pollMilliseconds = 500
 
         while Date() < deadline {
-            // Primary path: DHCP lease file with ARP MAC cross-check.
-            // Lease binds IP to hostname, so this is preferred when bootpd answered.
+            // Primary path: DHCP lease bound to our hostname, cross-checked against
+            // our per-instance MAC. Preferred whenever bootpd answered.
             if let ip = parseLeaseFile(path: leaseFile, hostname: hostname, notBefore: notBeforeTimestamp),
-               Self.verifyIPViaARP(ip: ip, expectedMAC: Constants.macAddressString)
+               Self.isValidIPv4(ip),
+               Self.verifyIPViaARP(ip: ip, expectedMAC: mac)
             {
                 return ip
-            } else if let ip = Self.scanARPTableForMAC(Constants.macAddressString) {
-                // Fallback: ARP sweep by deterministic MAC. Recovers when bootpd never
-                // wrote a lease (firewall / stuck launchd) but the guest still appears
-                // in the host ARP table via any broadcast it sent.
+            }
+
+            consecutiveLeaseMisses += 1
+
+            // Fallback: ARP sweep by our MAC. Recovers when bootpd never wrote a
+            // lease (firewall / stuck launchd) but the guest still reached the host
+            // via ARP. Gated behind several lease misses AND a TCP/22 liveness probe
+            // so a *stale* ARP entry from a prior boot can't yield a dead/wrong IP.
+            if consecutiveLeaseMisses >= 3,
+               let ip = Self.scanARPTableForMAC(mac),
+               Self.isValidIPv4(ip),
+               Self.isTCPPortOpen(ip: ip, port: 22)
+            {
                 return ip
             }
-            try await Task.sleep(for: .milliseconds(500))
+
+            try await Task.sleep(for: .milliseconds(pollMilliseconds))
+            // Linear backoff (cap 2s) to avoid spawning ~240 arp/nc subprocesses.
+            pollMilliseconds = min(pollMilliseconds + 250, 2000)
         }
 
         throw NetworkError.guestIPNotFound
@@ -241,7 +343,7 @@ struct NetworkManager {
             throw NetworkError.guestIPNotFound
         }
         let ip = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ip.isEmpty else {
+        guard NetworkManager.isValidIPv4(ip) else {
             throw NetworkError.guestIPNotFound
         }
         return ip
@@ -249,15 +351,40 @@ struct NetworkManager {
 
     /// Save guest IP to the state directory.
     func writeGuestIP(_ ip: String) throws {
+        guard NetworkManager.isValidIPv4(ip) else {
+            throw NetworkError.guestIPNotFound
+        }
+        try FileManager.default.createDirectory(
+            at: stateDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o755]
+        )
         let guestIPFileURL = VMConfig.guestIPFileURL(for: stateDirectory)
         try ip.write(to: guestIPFileURL, atomically: true, encoding: .utf8)
+        // 0o600: the guest IP is local state; no reason for it to be world-readable.
         try FileManager.default.setAttributes(
-            [.posixPermissions: 0o644],
+            [.posixPermissions: 0o600],
             ofItemAtPath: guestIPFileURL.path
         )
     }
 
     // MARK: - SSH Connection
+
+    /// Remove any stale host-key entry for `ip` from the known_hosts file so a
+    /// rebuilt guest reusing the same NAT IP doesn't hard-fail host-key checking.
+    /// Best-effort: a missing file or ssh-keygen failure is non-fatal.
+    static func scrubKnownHost(ip: String, knownHostsURL: URL) {
+        guard isValidIPv4(ip), FileManager.default.fileExists(atPath: knownHostsURL.path) else {
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+        process.arguments = ["-R", ip, "-f", knownHostsURL.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
+    }
 
     func connectSSH(extraArgs: [String] = []) throws {
         guard FileManager.default.fileExists(atPath: sshKeyPath.path) else {
@@ -265,12 +392,18 @@ struct NetworkManager {
         }
 
         let guestIP = try readGuestIP()
+        let knownHostsURL = stateDirectory.appendingPathComponent("ssh/known_hosts")
+
+        // The guest has no persistent host key: a rebuilt VM that reuses a NAT IP
+        // would otherwise trip "REMOTE HOST IDENTIFICATION HAS CHANGED" and hard-fail.
+        // Scrub any stale entry for this IP so accept-new can re-pin the new key.
+        Self.scrubKnownHost(ip: guestIP, knownHostsURL: knownHostsURL)
 
         var arguments = [
             "/usr/bin/ssh",
             "-i", sshKeyPath.path,
             "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "UserKnownHostsFile=\(stateDirectory.appendingPathComponent("ssh/known_hosts").path)",
+            "-o", "UserKnownHostsFile=\(knownHostsURL.path)",
             "-o", "LogLevel=ERROR",
         ]
 

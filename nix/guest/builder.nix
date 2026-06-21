@@ -10,17 +10,17 @@
     };
   };
 
-  # Builder user (SSH login target for remote builds)
+  # Builder user (SSH login target for remote builds).
+  # Deliberately NOT in the wheel group and granted no sudo: remote Nix builds
+  # run through the nix-daemon (which trusts "builder" via nix.settings.trusted-users),
+  # so the account needs no root escalation. The guest is untrusted, so we keep
+  # its blast radius minimal.
   users.users.builder = {
     isNormalUser = true;
     group = "builder";
     home = "/home/builder";
-    extraGroups = [ "wheel" ];
   };
   users.groups.builder = { };
-
-  # Allow passwordless sudo for wheel group (builder has no password, SSH-key-only)
-  security.sudo.wheelNeedsPassword = false;
 
   # SSH key injection from host via VirtioFS
   fileSystems."/run/ssh-keys" = {
@@ -68,7 +68,26 @@
     cores = 3;
     max-jobs = 4;
     builders-use-substitutes = true;
+
+    # Long-lived builder: reclaim disk automatically under pressure so the VM
+    # never wedges on a full overlay upperdir. The nix-daemon starts GCing when
+    # free space drops below min-free and stops once max-free is available.
+    min-free = 1073741824; # 1 GiB
+    max-free = 4294967296; # 4 GiB
   };
+
+  # Periodic GC as a backstop to the min-free/max-free pressure GC above.
+  nix.gc = {
+    automatic = true;
+    dates = "weekly";
+    options = "--delete-older-than 14d";
+  };
+
+  # NOTE (future optimization): the host's /nix/store is shared read-only as the
+  # overlay lowerdir, but those paths are not registered in the guest's Nix DB,
+  # so the daemon re-copies inputs it could otherwise reuse. Correctness is
+  # unaffected (copies still succeed); registering the lowerdir paths would avoid
+  # redundant transfers. Deferred until it can be validated against a live VM.
 
   # Ensure nix-daemon starts after SSH keys are injected
   systemd.services.nix-daemon = {

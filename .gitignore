@@ -1,11 +1,12 @@
 # Swift
 .build/
 .swiftpm/
+.swiftpm-cache/
+.home/
 *.xcodeproj/
 *.xcworkspace/
 xcuserdata/
 DerivedData/
-Package.resolved
 
 # Nix
 result
@@ -23,3 +24,7 @@ result-*
 # State
 *.img
 *.pid
+/daemon.log
+/console.log
+/guest-ip
+/ssh/

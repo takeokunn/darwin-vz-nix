@@ -7,6 +7,9 @@
 
 let
   cfg = config.services.darwin-vz;
+  workingDirectoryShell = lib.escapeShellArg cfg.workingDirectory;
+  guestIPFileShell = lib.escapeShellArg "${cfg.workingDirectory}/guest-ip";
+  workingDirectoryHasWhitespace = builtins.match ".*[[:space:]].*" cfg.workingDirectory != null;
 
   vmArgs = [
     "${cfg.package}/bin/darwin-vz-nix"
@@ -128,17 +131,6 @@ in
       default = false;
       description = "Show VM console output in daemon.log. Increases log volume significantly.";
     };
-
-    extraNixOSConfig = lib.mkOption {
-      type = lib.types.deferredModule;
-      default = { };
-      description = ''
-        Additional NixOS configuration for the guest VM.
-        Note: In v0.1.0, this option is reserved for future use.
-        To customize the guest NixOS configuration, modify the modules
-        list in nixosConfigurations.darwin-vz-guest in your flake.nix.
-      '';
-    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -147,6 +139,12 @@ in
       {
         assertion = !(config.nix.linux-builder.enable or false);
         message = "services.darwin-vz and nix.linux-builder cannot be enabled simultaneously. Disable one of them.";
+      }
+      {
+        # newsyslog.conf cannot express paths containing whitespace, so log
+        # rotation would be silently dropped. Fail loudly instead.
+        assertion = !workingDirectoryHasWhitespace;
+        message = "services.darwin-vz.workingDirectory must not contain whitespace (log rotation cannot be configured for it): '${cfg.workingDirectory}'.";
       }
     ];
 
@@ -174,7 +172,7 @@ in
       text = ''
         Host darwin-vz-nix
           User builder
-          ProxyCommand /bin/sh -c 'exec /usr/bin/nc "$(cat ${cfg.workingDirectory}/guest-ip)" 22'
+          ProxyCommand /bin/sh -c 'ip=$(/bin/cat -- "$1"); exec /usr/bin/nc "$ip" 22' sh ${guestIPFileShell}
           IdentityFile ~/.ssh/darwin-vz-nix
           StrictHostKeyChecking accept-new
           UserKnownHostsFile ~/.ssh/darwin-vz-nix_known_hosts
@@ -194,8 +192,7 @@ in
       };
     };
 
-    # Log rotation via newsyslog
-    environment.etc."newsyslog.d/darwin-vz-nix.conf" = {
+    environment.etc."newsyslog.d/darwin-vz-nix.conf" = lib.mkIf (!workingDirectoryHasWhitespace) {
       text = ''
         # logfilename                                    mode  count  size   when  flags
         ${cfg.workingDirectory}/daemon.log                644   5      10240  *     J
@@ -206,17 +203,32 @@ in
     # Ensure working directory exists with traversable permissions
     system.activationScripts.darwin-vz-nix = {
       text = ''
-        mkdir -p ${cfg.workingDirectory}
-        chmod 755 ${cfg.workingDirectory}
+        WORKING_DIRECTORY=${workingDirectoryShell}
+        mkdir -p "$WORKING_DIRECTORY"
+        chmod 755 "$WORKING_DIRECTORY"
 
-        SSH_WORK_DIR="${cfg.workingDirectory}/ssh"
+        SSH_WORK_DIR="$WORKING_DIRECTORY/ssh"
         mkdir -p "$SSH_WORK_DIR"
         chmod 700 "$SSH_WORK_DIR"
 
-        if [ ! -f "$SSH_WORK_DIR/id_ed25519" ] || [ ! -f "$SSH_WORK_DIR/id_ed25519.pub" ]; then
-          rm -f "$SSH_WORK_DIR/id_ed25519" "$SSH_WORK_DIR/id_ed25519.pub"
+        if [ -f "$SSH_WORK_DIR/id_ed25519" ]; then
+          chmod 600 "$SSH_WORK_DIR/id_ed25519"
+
+          if [ ! -f "$SSH_WORK_DIR/id_ed25519.pub" ]; then
+            if /usr/bin/ssh-keygen -y -f "$SSH_WORK_DIR/id_ed25519" > "$SSH_WORK_DIR/id_ed25519.pub.tmp"; then
+              printf ' builder@darwin-vz-nix\n' >> "$SSH_WORK_DIR/id_ed25519.pub.tmp"
+              mv "$SSH_WORK_DIR/id_ed25519.pub.tmp" "$SSH_WORK_DIR/id_ed25519.pub"
+            else
+              rm -f "$SSH_WORK_DIR/id_ed25519" "$SSH_WORK_DIR/id_ed25519.pub" "$SSH_WORK_DIR/id_ed25519.pub.tmp"
+              /usr/bin/ssh-keygen -q -f "$SSH_WORK_DIR/id_ed25519" -t ed25519 -N "" -C "builder@darwin-vz-nix"
+            fi
+          fi
+        else
+          rm -f "$SSH_WORK_DIR/id_ed25519.pub"
           /usr/bin/ssh-keygen -q -f "$SSH_WORK_DIR/id_ed25519" -t ed25519 -N "" -C "builder@darwin-vz-nix"
         fi
+        chmod 600 "$SSH_WORK_DIR/id_ed25519"
+        chmod 644 "$SSH_WORK_DIR/id_ed25519.pub"
 
         # Auto-detect the console user (the logged-in macOS user)
         CONSOLE_USER=$(/usr/bin/stat -f '%Su' /dev/console)
@@ -232,9 +244,9 @@ in
         chown "$CONSOLE_USER" "$USER_SSH_DIR"
 
         # Copy SSH key for user access.
-        if [ -f "${cfg.workingDirectory}/ssh/id_ed25519" ]; then
-          install -m 600 -o "$CONSOLE_USER" "${cfg.workingDirectory}/ssh/id_ed25519" "$USER_SSH_DIR/darwin-vz-nix"
-          install -m 644 -o "$CONSOLE_USER" "${cfg.workingDirectory}/ssh/id_ed25519.pub" "$USER_SSH_DIR/darwin-vz-nix.pub"
+        if [ -f "$WORKING_DIRECTORY/ssh/id_ed25519" ]; then
+          install -m 600 -o "$CONSOLE_USER" "$WORKING_DIRECTORY/ssh/id_ed25519" "$USER_SSH_DIR/darwin-vz-nix"
+          install -m 644 -o "$CONSOLE_USER" "$WORKING_DIRECTORY/ssh/id_ed25519.pub" "$USER_SSH_DIR/darwin-vz-nix.pub"
         fi
 
         # Ensure known_hosts file exists with correct permissions

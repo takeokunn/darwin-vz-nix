@@ -2,7 +2,6 @@
 import Foundation
 import Testing
 
-@Suite("VMManager", .tags(.unit))
 struct VMManagerTests {
     private enum SampleError: Error {
         case failed
@@ -10,7 +9,7 @@ struct VMManagerTests {
 
     // MARK: - readPID Tests
 
-    @Test("readPID returns correct value from valid PID file")
+    @Test
     func readPIDValid() {
         let url = TestHelpers.createTempFile(content: "12345\n")
         defer { TestHelpers.removeTempItem(at: url) }
@@ -18,7 +17,26 @@ struct VMManagerTests {
         #expect(pid == 12345)
     }
 
-    @Test("readPID returns nil for empty file")
+    @Test
+    func readPIDJSON() throws {
+        let record = VMProcessRecord(
+            pid: 12345,
+            executablePath: "/nix/store/example/bin/darwin-vz-nix",
+            stateDirectory: "/var/lib/darwin-vz-nix",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(record)
+        let url = TestHelpers.createTempFile(content: String(decoding: data, as: UTF8.self))
+        defer { TestHelpers.removeTempItem(at: url) }
+
+        let decoded = try #require(VMManager.readPIDRecord(from: url))
+        #expect(decoded == record)
+        #expect(VMManager.readPID(from: url) == 12345)
+    }
+
+    @Test
     func readPIDEmptyFile() {
         let url = TestHelpers.createTempFile(content: "")
         defer { TestHelpers.removeTempItem(at: url) }
@@ -26,14 +44,14 @@ struct VMManagerTests {
         #expect(pid == nil)
     }
 
-    @Test("readPID returns nil for non-existent file")
+    @Test
     func readPIDNonExistent() {
         let url = URL(fileURLWithPath: "/tmp/nonexistent-pid-\(UUID().uuidString)")
         let pid = VMManager.readPID(from: url)
         #expect(pid == nil)
     }
 
-    @Test("readPID returns nil for file with non-numeric content")
+    @Test
     func readPIDNonNumeric() {
         let url = TestHelpers.createTempFile(content: "abc")
         defer { TestHelpers.removeTempItem(at: url) }
@@ -41,22 +59,58 @@ struct VMManagerTests {
         #expect(pid == nil)
     }
 
+    @Test
+    func readPIDNonPositiveLegacyValue() {
+        for value in ["0", "-1"] {
+            let url = TestHelpers.createTempFile(content: value)
+            defer { TestHelpers.removeTempItem(at: url) }
+            #expect(VMManager.readPID(from: url) == nil)
+            #expect(VMManager.readPIDRecord(from: url) == nil)
+        }
+    }
+
+    @Test
+    func readPIDNonPositiveJSONValue() throws {
+        for pid in [Int32(0), Int32(-1)] {
+            let record = VMProcessRecord(
+                pid: pid,
+                executablePath: "/nix/store/example/bin/darwin-vz-nix",
+                stateDirectory: "/var/lib/darwin-vz-nix",
+                startedAt: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(record)
+            let url = TestHelpers.createTempFile(content: String(decoding: data, as: UTF8.self))
+            defer { TestHelpers.removeTempItem(at: url) }
+
+            #expect(VMManager.readPID(from: url) == nil)
+            #expect(VMManager.readPIDRecord(from: url) == nil)
+        }
+    }
+
     // MARK: - isProcessRunning Tests
 
-    @Test("isProcessRunning returns true for current process PID")
+    @Test
     func isProcessRunningCurrentProcess() {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         #expect(VMManager.isProcessRunning(pid: currentPID) == true)
     }
 
-    @Test("isProcessRunning returns false for invalid PID")
+    @Test
     func isProcessRunningInvalidPID() {
         #expect(VMManager.isProcessRunning(pid: 99999) == false)
     }
 
+    @Test
+    func isProcessRunningNonPositivePID() {
+        #expect(VMManager.isProcessRunning(pid: 0) == false)
+        #expect(VMManager.isProcessRunning(pid: -1) == false)
+    }
+
     // MARK: - VMManagerError Tests
 
-    @Test("VMManagerError.errorDescription is non-nil and contains expected keywords for all cases")
+    @Test
     func errorDescriptions() throws {
         let cases: [(VMManagerError, String)] = [
             (.vmNotRunning, "no virtual machine"),
@@ -68,13 +122,12 @@ struct VMManagerTests {
             (.configurationInvalid("test reason"), "configuration"),
         ]
         for (error, keyword) in cases {
-            let description = error.errorDescription
-            #expect(description != nil)
-            #expect(try #require(description?.localizedLowercase.contains(keyword.lowercased())))
+            let description = try #require(error.errorDescription)
+            #expect(description.localizedLowercase.contains(keyword.lowercased()))
         }
     }
 
-    @Test("guestIPFileURL points to expected location")
+    @Test
     func guestIPFileLocation() {
         let stateDirectory = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: stateDirectory) }
@@ -95,7 +148,7 @@ struct VMManagerTests {
         #expect(guestIPFile.deletingLastPathComponent().path == stateDirectory.path)
     }
 
-    @Test("withPIDFile removes stale PID file when startup work fails")
+    @Test
     func withPIDFileCleansUpOnFailure() async throws {
         let stateDirectory = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: stateDirectory) }
@@ -123,28 +176,28 @@ struct VMManagerTests {
 
     // MARK: - stripTerminalRequests
 
-    @Test("stripTerminalRequests removes DSR sequences")
+    @Test
     func stripDSR() {
         let input = Data("hello\u{1B}[6n world".utf8)
         let output = VMManager.stripTerminalRequests(input)
         #expect(String(data: output, encoding: .utf8) == "hello world")
     }
 
-    @Test("stripTerminalRequests removes DA (device attributes) sequences")
+    @Test
     func stripDA() {
         let input = Data("before\u{1B}[cafter".utf8)
         let output = VMManager.stripTerminalRequests(input)
         #expect(String(data: output, encoding: .utf8) == "beforeafter")
     }
 
-    @Test("stripTerminalRequests removes parameterized DSR requests like CPR")
+    @Test
     func stripParameterizedDSR() {
         let input = Data("pre\u{1B}[12;34npost".utf8)
         let output = VMManager.stripTerminalRequests(input)
         #expect(String(data: output, encoding: .utf8) == "prepost")
     }
 
-    @Test("stripTerminalRequests preserves color/SGR escape sequences")
+    @Test
     func stripPreservesColor() {
         let input = Data("\u{1B}[31mred\u{1B}[0m".utf8)
         let output = VMManager.stripTerminalRequests(input)
@@ -152,20 +205,20 @@ struct VMManagerTests {
         #expect(String(data: output, encoding: .utf8) == "\u{1B}[31mred\u{1B}[0m")
     }
 
-    @Test("stripTerminalRequests returns empty data for empty input")
+    @Test
     func stripEmpty() {
         let output = VMManager.stripTerminalRequests(Data())
         #expect(output.isEmpty)
     }
 
-    @Test("stripTerminalRequests passes plain ASCII text through unchanged")
+    @Test
     func stripPlainText() {
         let input = Data("plain ASCII line\n".utf8)
         let output = VMManager.stripTerminalRequests(input)
         #expect(output == input)
     }
 
-    @Test("stripTerminalRequests handles multiple DSR sequences in one buffer")
+    @Test
     func stripMultipleSequences() {
         let input = Data("a\u{1B}[6nb\u{1B}[cc".utf8)
         let output = VMManager.stripTerminalRequests(input)
@@ -174,7 +227,7 @@ struct VMManagerTests {
 
     // MARK: - terminateProcess (against real short-lived subprocess)
 
-    @Test("terminateProcess SIGTERM stops a cooperating sleep subprocess and removes pid file")
+    @Test
     func terminateSleepSIGTERM() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -192,13 +245,17 @@ struct VMManagerTests {
             if process.isRunning { process.terminate() }
         }
 
-        let stopped = try VMManager.terminateProcess(pid: process.processIdentifier, pidFileURL: pidFile)
+        let stopped = try VMManager.terminateProcess(
+            pid: process.processIdentifier,
+            pidFileURL: pidFile,
+            expectedExecutablePath: "/bin/sleep"
+        )
         #expect(stopped == true)
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
         #expect(VMManager.isProcessRunning(pid: process.processIdentifier) == false)
     }
 
-    @Test("terminateProcess force=true kills a sleep subprocess immediately")
+    @Test
     func terminateSleepForceKill() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -217,22 +274,101 @@ struct VMManagerTests {
         }
 
         let stopped = try VMManager.terminateProcess(
-            pid: process.processIdentifier, pidFileURL: pidFile, force: true
+            pid: process.processIdentifier, pidFileURL: pidFile, force: true,
+            expectedExecutablePath: "/bin/sleep"
         )
         #expect(stopped == true)
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
     }
 
-    @Test("terminateProcess throws stopFailed when pid does not exist")
-    func terminateNonExistentPID() {
+    /// Legacy PID file (no recorded executable path): a recycled PID belonging to
+    /// an unrelated process must NOT be treated as our VM (T2.8 hardening).
+    @Test
+    func processMatchesRecordRejectsLegacyPidForeignProcess() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["120"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+
+        // No expected path => legacy file. /bin/sleep is not darwin-vz-nix.
+        #expect(VMManager.processMatchesRecord(
+            pid: process.processIdentifier,
+            expectedExecutablePath: nil
+        ) == false)
+    }
+
+    @Test
+    func terminateRefusesExecutableMismatch() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
         let pidFile = tempDir.appendingPathComponent("vm.pid")
 
-        // PID 99999 is extremely unlikely to exist on a test host.
-        // kill(99999, SIGTERM) will return ESRCH, which terminateProcess surfaces as stopFailed.
-        #expect(throws: VMManagerError.self) {
-            _ = try VMManager.terminateProcess(pid: 99999, pidFileURL: pidFile)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["120"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        try "\(process.processIdentifier)".write(to: pidFile, atomically: true, encoding: .utf8)
+
+        defer {
+            if process.isRunning { process.terminate() }
         }
+
+        #expect(throws: VMManagerError.self) {
+            _ = try VMManager.terminateProcess(
+                pid: process.processIdentifier,
+                pidFileURL: pidFile,
+                expectedExecutablePath: "/definitely/not/bin/darwin-vz-nix"
+            )
+        }
+        #expect(process.isRunning == true)
+        #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
+    }
+
+    @Test
+    func terminateNonExistentPID() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+        let pidFile = tempDir.appendingPathComponent("vm.pid")
+        try "99999".write(to: pidFile, atomically: true, encoding: .utf8)
+
+        // PID 99999 is extremely unlikely to exist on a test host.
+        // kill(99999, SIGTERM) returns ESRCH, which should be treated as already stopped.
+        let stopped = try VMManager.terminateProcess(pid: 99999, pidFileURL: pidFile)
+        #expect(stopped == true)
+        #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
+    }
+
+    @Test
+    func terminateNonExistentPIDWithExpectedExecutable() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+        let pidFile = tempDir.appendingPathComponent("vm.pid")
+        try "99999".write(to: pidFile, atomically: true, encoding: .utf8)
+
+        let stopped = try VMManager.terminateProcess(
+            pid: 99999,
+            pidFileURL: pidFile,
+            expectedExecutablePath: "/definitely/not/bin/darwin-vz-nix"
+        )
+        #expect(stopped == true)
+        #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
+    }
+
+    @Test
+    func terminateNonPositivePID() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+        let pidFile = tempDir.appendingPathComponent("vm.pid")
+        try "0".write(to: pidFile, atomically: true, encoding: .utf8)
+
+        #expect(throws: VMManagerError.self) {
+            _ = try VMManager.terminateProcess(pid: 0, pidFileURL: pidFile)
+        }
+        #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
     }
 }

@@ -1,6 +1,7 @@
-name: Release
+name: VM Smoke Test
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*.*.*'
@@ -11,10 +12,9 @@ permissions:
 env:
   CACHIX_AUTH_TOKEN_PRESENT: ${{ secrets.CACHIX_AUTH_TOKEN != '' }}
 
-# Releases must never be cancelled mid-run, so do not cancel in-progress jobs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   guest-artifacts:
@@ -28,9 +28,6 @@ jobs:
         uses: ./.github/actions/setup-nix
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Nix flake check
-        run: nix flake check --print-build-logs --system aarch64-linux
 
       - name: Build guest artifacts
         run: nix run .#build-guest-artifacts -- --out-dir ci-artifacts/runtime
@@ -63,16 +60,9 @@ jobs:
             ci-artifacts/runtime/result-system \
             ci-artifacts/runtime/result-guest-artifacts
 
-  # Dormant release gate. Off by default so releases publish unchanged; set the
-  # repo variable ENABLE_VM_SMOKE_GATE=true once a self-hosted Apple Silicon
-  # runner exists to require a live VM boot before publishing. The trigger is
-  # tag push (maintainer-only), so no fork/PR code reaches the self-hosted runner.
-  # NOTE: when enabling this gate, switch vm-smoke.yml to workflow_dispatch-only
-  # to avoid a redundant second smoke run on the same tag.
-  smoke-gate:
-    name: Boot VM and Verify SSH (release gate)
+  smoke-test:
+    name: Boot VM and Verify SSH
     needs: guest-artifacts
-    if: ${{ vars.ENABLE_VM_SMOKE_GATE == 'true' }}
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     steps:
@@ -135,81 +125,3 @@ jobs:
           path: ci-artifacts/smoke-state
           if-no-files-found: ignore
           retention-days: 7
-
-  release:
-    name: Build and Release
-    needs: [guest-artifacts, smoke-gate]
-    if: >-
-      ${{ always()
-      && needs.guest-artifacts.result == 'success'
-      && (needs.smoke-gate.result == 'success' || needs.smoke-gate.result == 'skipped') }}
-    runs-on: macos-15
-    timeout-minutes: 60
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Nix Flake Check
-        run: nix flake check --print-build-logs --system aarch64-darwin
-
-      - name: Verify release tag matches package version
-        run: |
-          package_version=$(nix eval --raw .#packages.aarch64-darwin.darwin-vz-nix.version)
-          expected_tag="v${package_version}"
-          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
-            echo "Release tag ${GITHUB_REF_NAME} does not match package version ${package_version}; expected ${expected_tag}." >&2
-            exit 1
-          fi
-
-      - name: Verify VERSION file and CHANGELOG match release tag
-        run: |
-          version_file=$(tr -d '[:space:]' < VERSION)
-          expected_tag="v${version_file}"
-          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
-            echo "Release tag ${GITHUB_REF_NAME} does not match VERSION file ${version_file}; expected ${expected_tag}." >&2
-            exit 1
-          fi
-          changelog_version=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-          if [ -z "$changelog_version" ]; then
-            echo "Could not find a released version heading in CHANGELOG.md." >&2
-            exit 1
-          fi
-          if [ "$changelog_version" != "$version_file" ]; then
-            echo "CHANGELOG.md top released version ${changelog_version} does not match VERSION file ${version_file}." >&2
-            exit 1
-          fi
-
-      - name: Build darwin binary
-        run: nix build .#darwin-vz-nix -o result-darwin
-
-      - name: Package release assets
-        run: |
-          mkdir -p dist
-          cp result-darwin/bin/darwin-vz-nix dist/darwin-vz-nix-aarch64-darwin
-          chmod 0755 dist/darwin-vz-nix-aarch64-darwin
-          (cd dist && shasum -a 256 darwin-vz-nix-aarch64-darwin > darwin-vz-nix-aarch64-darwin.sha256)
-
-      - name: Generate build provenance attestation
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
-        with:
-          subject-path: dist/darwin-vz-nix-aarch64-darwin
-
-      - name: Push to Cachix
-        if: env.CACHIX_AUTH_TOKEN_PRESENT == 'true'
-        run: cachix push takeokunn-darwin-vz-nix result-darwin
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
-        with:
-          generate_release_notes: true
-          files: |
-            dist/darwin-vz-nix-aarch64-darwin
-            dist/darwin-vz-nix-aarch64-darwin.sha256

@@ -29,5 +29,16 @@ enum Constants {
 
     /// Deterministic locally-administered MAC address for the VM.
     /// "02" = locally administered + unicast; "da:72:56" = mnemonic for "darVZ".
+    ///
+    /// Used as the fallback/base MAC; `VMConfig` derives a per-state-directory
+    /// MAC from this prefix so multiple VMs do not collide. See `VMConfig.macAddress`.
     static let macAddressString = "02:da:72:56:00:01"
+
+    // MARK: - Lifecycle Timeouts
+
+    /// Seconds to wait for the guest OS to power off after an ACPI stop request
+    /// before forcing process termination. Kept below the external `stop`
+    /// subcommand's 30s SIGTERM grace period so the guest gets a full chance to
+    /// sync filesystems and unmount before any SIGKILL fallback.
+    static let gracefulStopTimeoutSeconds = 20
 }

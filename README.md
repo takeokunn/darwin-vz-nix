@@ -21,24 +21,23 @@ A Swift CLI tool and nix-darwin module that boots NixOS Linux VMs using macOS Vi
 
 ### Building Guest Artifacts
 
-NixOS guest kernel, initrd, and system toplevel are pre-built and available via [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix). When you use this flake, the binary cache is automatically configured.
+NixOS guest kernel, initrd, and system toplevel target `aarch64-linux`. On Apple Silicon macOS they must either be fetched from [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix) or built by a configured Linux builder. This flake configures the project Cachix cache automatically.
 
-Since guest artifacts target `aarch64-linux` but you are building on `aarch64-darwin`, you need extra Nix options to fetch them from the binary cache:
+Use the helper app to fetch or build the kernel, initrd, system toplevel, and bundled artifact output:
 
 ```bash
-nix build .#packages.aarch64-linux.guest-kernel -o result-kernel \
-  --max-jobs 0 \
-  --option extra-platforms aarch64-linux \
-  --option always-allow-substitutes true
-nix build .#packages.aarch64-linux.guest-initrd -o result-initrd \
-  --max-jobs 0 \
-  --option extra-platforms aarch64-linux \
-  --option always-allow-substitutes true
-nix build .#packages.aarch64-linux.guest-system -o result-system \
-  --max-jobs 0 \
-  --option extra-platforms aarch64-linux \
-  --option always-allow-substitutes true
+nix run .#build-guest-artifacts
 ```
+
+The command writes `result-kernel`, `result-initrd`, `result-system`, and `result-guest-artifacts` in the current directory. Use `nix run .#build-guest-artifacts -- --out-dir /path/to/dir` or set `DARWIN_VZ_NIX_ARTIFACT_DIR=/path/to/dir` to write them elsewhere. If Cachix does not yet contain artifacts for the current flake lock, run the build on an `aarch64-linux` machine, configure a remote Linux builder, or wait for the main CI workflow to push the updated artifacts. CI jobs that already imported a `nix-store -qR` closure manifest can use `--from-closure-manifest /path/to/manifest` to materialize result links without rebuilding or refetching the guest outputs.
+
+To run the full local smoke test on Apple Silicon macOS, use:
+
+```bash
+nix run .#smoke-test
+```
+
+The smoke test fetches or builds the guest artifacts, boots the VM, waits for SSH, runs `true` in the guest, and stops the VM. It uses a temporary state directory by default. Set `DARWIN_VZ_NIX_SMOKE_KEEP_STATE=1` to keep the state directory for debugging. By default, `DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS=auto` reuses existing `result-kernel`, `result-initrd`, and `result-system` links in the artifact directory when they are already valid; use `always` to refresh them or `never` to require prebuilt links.
 
 ### CLI Usage
 
@@ -60,14 +59,26 @@ nix run .#darwin-vz-nix -- ssh
 nix run .#darwin-vz-nix -- stop
 nix run .#darwin-vz-nix -- stop --force
 
+# Diagnose host-side networking / DHCP / Nix store issues
+nix run .#darwin-vz-nix -- doctor
+nix run .#darwin-vz-nix -- doctor --json
+
 # Destroy all VM state (disk, SSH keys, logs)
 nix run .#darwin-vz-nix -- destroy
 nix run .#darwin-vz-nix -- destroy --yes  # skip confirmation
+
+# Print the version
+nix run .#darwin-vz-nix -- --version
 ```
 
 ### CLI Options
 
 ```
+darwin-vz-nix --version    Print the version and exit
+
+# All subcommands accept --state-dir DIR to operate on a non-default state
+# directory (default: ~/.local/share/darwin-vz-nix). One VM per state directory.
+
 darwin-vz-nix start [OPTIONS]
   --cores N          CPU cores (default: 4)
   --memory N         Memory in MB (default: 8192)
@@ -79,17 +90,26 @@ darwin-vz-nix start [OPTIONS]
   --rosetta/--no-rosetta    Enable/disable Rosetta 2 (default: enabled)
   --share-nix-store/--no-share-nix-store  Share /nix/store (default: enabled)
   --verbose          Show VM console output on stderr
+  --state-dir DIR    State directory (default: ~/.local/share/darwin-vz-nix)
 
-darwin-vz-nix ssh [ARGS...]
+darwin-vz-nix ssh [ARGS...] [--state-dir DIR]
 
 darwin-vz-nix stop [OPTIONS]
   --force            Force stop without graceful shutdown
+  --state-dir DIR    State directory
 
 darwin-vz-nix status [OPTIONS]
   --json             Output in JSON format
+  --state-dir DIR    State directory
+
+darwin-vz-nix doctor [OPTIONS]
+  --json             Output the diagnostic report as JSON
 
 darwin-vz-nix destroy [OPTIONS]
   --yes              Skip confirmation prompt
+  --state-dir DIR    State directory
+
+Exit codes: 0 success · 1 unexpected error · 3 VM not running / wrong state · 64 usage error
 ```
 
 ### nix-darwin Module
@@ -116,9 +136,6 @@ Then in your nix-darwin configuration:
     diskSize = "100G";
     rosetta = true;
     idleTimeout = 180;  # minutes (0 = disabled)
-    kernelPath = "${inputs.darwin-vz-nix.packages.aarch64-linux.guest-kernel}/Image";
-    initrdPath = "${inputs.darwin-vz-nix.packages.aarch64-linux.guest-initrd}/initrd";
-    systemPath = "${inputs.darwin-vz-nix.packages.aarch64-linux.guest-system}";
   };
 }
 ```
@@ -141,14 +158,56 @@ This will:
 | `diskSize` | string | `"100G"` | Disk size (e.g. `"100G"`, `"50G"`) |
 | `rosetta` | bool | `true` | Enable Rosetta 2 for x86_64-linux |
 | `idleTimeout` | unsigned int | `180` | Idle timeout in minutes (0 = disabled) |
-| `kernelPath` | string | *(required)* | Path to guest kernel image |
-| `initrdPath` | string | *(required)* | Path to guest initrd |
-| `systemPath` | string | *(required)* | Path to guest system toplevel |
+| `kernelPath` | string | flake guest kernel | Path to guest kernel image |
+| `initrdPath` | string | flake guest initrd | Path to guest initrd |
+| `systemPath` | string | flake guest system | Path to guest system toplevel |
 | `workingDirectory` | string | `"/var/lib/darwin-vz-nix"` | VM state directory |
 | `maxJobs` | positive int | same as `cores` | Concurrent build jobs |
 | `protocol` | string | `"ssh-ng"` | Build protocol |
 | `supportedFeatures` | list of string | `["kvm", "benchmark", "big-parallel"]` | Builder features |
-| `extraNixOSConfig` | module | `{}` | Reserved for future use (not usable in v0.1.0) |
+
+#### Custom Guest Configuration
+
+The guest NixOS system is built as `aarch64-linux` flake outputs. To customize it, create your own guest configuration with `mkGuestConfiguration`, expose its artifacts, and point the Darwin module at those paths:
+
+```nix
+{
+  outputs =
+    inputs@{ self, darwin-vz-nix, nix-darwin, ... }:
+    let
+      customGuest = darwin-vz-nix.lib.aarch64-linux.mkGuestConfiguration {
+        modules = [
+          {
+            services.openssh.settings.PasswordAuthentication = false;
+            nix.settings.max-jobs = 8;
+          }
+        ];
+      };
+    in
+    {
+      packages.aarch64-linux.guest-kernel = customGuest.config.system.build.kernel;
+      packages.aarch64-linux.guest-initrd = customGuest.config.system.build.initialRamdisk;
+      packages.aarch64-linux.guest-system = customGuest.config.system.build.toplevel;
+
+      darwinConfigurations.my-host = nix-darwin.lib.darwinSystem {
+        system = "aarch64-darwin";
+        modules = [
+          darwin-vz-nix.darwinModules.default
+          {
+            services.darwin-vz = {
+              enable = true;
+              kernelPath = "${self.packages.aarch64-linux.guest-kernel}/Image";
+              initrdPath = "${self.packages.aarch64-linux.guest-initrd}/initrd";
+              systemPath = "${self.packages.aarch64-linux.guest-system}";
+            };
+          }
+        ];
+      };
+    };
+}
+```
+
+You can also import `darwin-vz-nix.nixosModules.default` directly in a custom `nixosSystem` if you need full control over `nixpkgs-linux`.
 
 ## Architecture
 
@@ -174,7 +233,7 @@ This will:
 │  │  ├─ nix-daemon (trusted builder)          │  │
 │  │  ├─ /nix/store (overlayfs)                │  │
 │  │  │   lower: host /nix/store (VirtioFS)    │  │
-│  │  │   upper: tmpfs (writable)              │  │
+│  │  │   upper: root disk (writable)          │  │
 │  │  ├─ Rosetta 2 binfmt (x86_64-linux)       │  │
 │  │  └─ OpenSSH (key-only auth)               │  │
 │  └───────────────────────────────────────────┘  │
@@ -189,12 +248,13 @@ When using the CLI directly, state is stored at `~/.local/share/darwin-vz-nix/`.
 
 | File | Purpose |
 |------|---------|
-| `disk.img` | VM root filesystem (sparse, auto-formatted ext4) |
-| `ssh/id_ed25519` | SSH private key (auto-generated) |
-| `ssh/id_ed25519.pub` | SSH public key (shared with guest via VirtioFS) |
-| `ssh/known_hosts` | Guest SSH host key cache |
-| `guest-ip` | Guest IP address (DHCP-discovered) |
-| `vm.pid` | Running VM process ID |
+| `disk.img` | VM root filesystem (sparse, auto-formatted ext4; mode 0600) |
+| `ssh/id_ed25519` | SSH private key (auto-generated; never shared with the guest) |
+| `ssh/id_ed25519.pub` | SSH public key |
+| `ssh-pub/id_ed25519.pub` | Public-key-only copy that is shared into the guest via VirtioFS |
+| `ssh/known_hosts` | Guest SSH host key cache (stale entries scrubbed on reconnect) |
+| `guest-ip` | Guest IP address (DHCP-discovered; mode 0600) |
+| `vm.pid` | Running VM process record (PID + executable path) |
 | `console.log` | VM console output |
 
 ## Constraints
@@ -218,7 +278,13 @@ When using the CLI directly, state is stored at `~/.local/share/darwin-vz-nix/`.
 nix run .#darwin-vz-nix -- doctor
 ```
 
-This runs informational checks against the macOS Application Firewall state, `com.apple.bootpd`'s launchd status, host bridge interfaces, the DHCP lease database, and recent `bootpd` log entries. No state is modified.
+This runs informational checks against the macOS Application Firewall state, `com.apple.bootpd`'s launchd status, host bridge interfaces, the DHCP lease database, stale zero-byte Nix store lock files, and recent `bootpd` log entries. No state is modified.
+
+If `doctor` warns about stale Nix store locks, inspect them before deleting anything:
+
+```bash
+sudo find /nix/store -maxdepth 1 -name '*.lock' -size 0 -perm 600 -ls
+```
 
 **Fix** (all macOS versions, ≤14.3 and ≥14.4):
 
@@ -254,6 +320,8 @@ Tahoe changed the default vmnet subnet to `192.168.2.0/24` and silently ignores 
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local workflow and pull request expectations.
+
 ```bash
 # Enter dev shell
 nix develop
@@ -261,26 +329,71 @@ nix develop
 # Build
 swift build
 
+# Fast local tests in the dev shell
+swift-test-fast
+
 # Run (dev shell)
 swift run darwin-vz-nix --help
 
 # Run (without dev shell)
 nix run .#darwin-vz-nix -- --help
+nix run . -- --help
 
 # Build Nix package
 nix build .#darwin-vz-nix
+
+# Run the Darwin checks used by CI
+nix build .#checks.aarch64-darwin.swift-test --no-link --print-build-logs
+nix build .#checks.aarch64-darwin.formatting --no-link --print-build-logs
+nix build .#checks.aarch64-darwin.darwin-module --no-link --print-build-logs
+
+# Fetch or build guest artifacts
+nix run .#build-guest-artifacts
+
+# End-to-end local VM smoke test
+nix run .#smoke-test
+
+# Verify guest artifact outputs on an aarch64-linux machine or runner
+nix build .#checks.aarch64-linux.guest-artifacts
+nix build .#packages.aarch64-linux.guest-artifacts
 
 # Format Nix files
 nix fmt  # nixfmt-tree
 ```
 
+On Darwin, `nix run .#build-guest-artifacts` first checks whether a configured
+`aarch64-linux` builder exists. If no builder is configured, it preflights the
+guest outputs against the configured binary caches and exits before writing
+partial result links when the current lock has not been pushed to Cachix yet.
+On native `aarch64-linux`, the same app builds the guest artifacts locally even
+when no remote builders are configured.
+When a CI job transfers guest artifacts with `nix-store --export`, import the
+closure first and then run `nix run .#build-guest-artifacts -- --out-dir
+/path/to/artifacts --from-closure-manifest /path/to/guest-artifacts.closure` to
+create the result links from the imported store path.
+`nix run .#smoke-test` removes only the temporary state directory it creates
+itself. A directory passed through `DARWIN_VZ_NIX_SMOKE_STATE_DIR` is preserved
+for inspection after the run. Set `DARWIN_VZ_NIX_SMOKE_TMPDIR` to choose the
+parent directory used for temporary smoke-test state. Set
+`DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS=never` to skip artifact building and fail
+fast unless `DARWIN_VZ_NIX_ARTIFACT_DIR` already contains valid result links.
+
 ## CI/CD
 
 GitHub Actions runs on every PR and push to `main`:
 
-- **`nix flake check`** validates all flake outputs on an `aarch64-linux` runner
-- Builds `guest-kernel`, `guest-initrd`, and `guest-system` artifacts
-- Pushes to [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix) binary cache (`takeokunn-darwin-vz-nix`) on pushes to `main`
+- **macOS checks** run `nix flake check --system aarch64-darwin`, covering the Swift package, Swift tests, formatting, and nix-darwin module evaluation
+- **Linux guest artifact builds** run `nix run .#build-guest-artifacts` on the `aarch64-linux` runner for PRs and `main`, verifying the kernel `Image`, initrd, system `init`, and bundled guest artifacts through the same command users run locally
+- **VM smoke tests** run through the separate `VM Smoke Test` workflow on a self-hosted physical Apple Silicon macOS runner. GitHub-hosted macOS runners are not used for VM boot validation because they are already virtualized and do not reliably support this end-to-end Virtualization.framework test. Failed smoke runs upload the preserved VM state directory as a short-lived log artifact.
+- Pushes to [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix) binary cache (`takeokunn-darwin-vz-nix`) on pushes to `main` and version tags
+
+Before merging changes that affect boot, networking, SSH, or guest artifacts,
+run `nix run .#smoke-test` locally on Apple Silicon macOS or dispatch the
+`VM Smoke Test` workflow on a self-hosted runner.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## License
 

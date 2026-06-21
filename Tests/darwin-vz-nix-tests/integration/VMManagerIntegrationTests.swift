@@ -2,11 +2,11 @@
 import Foundation
 import Testing
 
-@Suite("VMManager Integration", .tags(.integration))
+@Suite(.tags(.integration))
 struct VMManagerIntegrationTests {
     // MARK: - PID File Roundtrip
 
-    @Test("PID file write then readPID returns matching value")
+    @Test
     func pidFileRoundtrip() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
@@ -19,7 +19,7 @@ struct VMManagerIntegrationTests {
         #expect(readBack == expectedPID)
     }
 
-    @Test("readPID returns nil after PID file is removed")
+    @Test
     func pidFileRemoval() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }

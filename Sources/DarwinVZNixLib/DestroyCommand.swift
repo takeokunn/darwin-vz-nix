@@ -18,14 +18,31 @@ public struct Destroy: AsyncParsableCommand {
         let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
         let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
-        // Auto-stop VM if running
-        if let pid = VMManager.readPID(from: pidFileURL), VMManager.isProcessRunning(pid: pid) {
-            print("VM is running. Stopping before destroying state...")
-            let stopped = try VMManager.terminateProcess(pid: pid, pidFileURL: pidFileURL)
-            if !stopped {
-                throw VMManagerError.stopFailed(
-                    "VM process \(pid) could not be stopped. Aborting destroy."
-                )
+        // Auto-stop VM if running. Treat reused/dead PID files as stale, but never signal an
+        // unrelated process before deleting state.
+        if let record = VMManager.readPIDRecord(from: pidFileURL) {
+            if VMManager.isProcessRunning(pid: record.pid) {
+                if VMManager.processMatchesRecord(
+                    pid: record.pid,
+                    expectedExecutablePath: record.executablePath
+                ) {
+                    print("VM is running. Stopping before destroying state...")
+                    let stopped = try VMManager.terminateProcess(
+                        pid: record.pid,
+                        pidFileURL: pidFileURL,
+                        expectedExecutablePath: record.executablePath
+                    )
+                    if !stopped {
+                        throw VMManagerError.stopFailed(
+                            "VM process \(record.pid) could not be stopped. Aborting destroy."
+                        )
+                    }
+                } else {
+                    try? FileManager.default.removeItem(at: pidFileURL)
+                    print("Stale PID file removed.")
+                }
+            } else {
+                try? FileManager.default.removeItem(at: pidFileURL)
             }
         }
 

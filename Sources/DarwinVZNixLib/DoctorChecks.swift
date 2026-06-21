@@ -1,7 +1,7 @@
 import Foundation
 
 /// Diagnostic output status for a single check.
-enum DoctorStatus {
+enum DoctorStatus: String, Codable {
     case ok
     case warning
     case info
@@ -9,10 +9,17 @@ enum DoctorStatus {
 }
 
 /// Result of one diagnostic check: label + status + detail lines.
-struct DoctorCheckResult {
+struct DoctorCheckResult: Codable {
     let label: String
     let status: DoctorStatus
     let detail: [String]
+}
+
+/// Machine-readable diagnostic report emitted by `doctor --json`.
+struct DoctorReport: Codable {
+    let version: String
+    let overall: DoctorStatus
+    let checks: [DoctorCheckResult]
 }
 
 enum DoctorChecks {
@@ -77,15 +84,37 @@ enum DoctorChecks {
         content.components(separatedBy: "}").count - 1
     }
 
+    // MARK: - Nix store lock files
+
+    /// Match the old self-healing lock-file heuristic without mutating the store.
+    static func isPotentialStaleNixStoreLock(name: String, fileType: FileAttributeType, fileSize: UInt64, permissions: Int) -> Bool {
+        name.hasSuffix(".lock") &&
+            fileType == .typeRegular &&
+            fileSize == 0 &&
+            permissions == 0o600
+    }
+
+    static func classifyStaleNixStoreLockCount(_ count: Int?) -> DoctorStatus {
+        guard let count else { return .skipped }
+        if count > 0 { return .warning }
+        return .ok
+    }
+
     // MARK: - Report formatting
+
+    /// Worst-case status across all checks (warning dominates), for a single
+    /// machine-readable verdict. Info/skipped are not failures.
+    static func overallStatus(_ results: [DoctorCheckResult]) -> DoctorStatus {
+        results.contains { $0.status == .warning } ? .warning : .ok
+    }
 
     /// Render a status marker for a check line. Plain ASCII; no emoji.
     static func marker(for status: DoctorStatus) -> String {
         switch status {
-        case .ok: return "[ OK ]"
-        case .warning: return "[WARN]"
-        case .info: return "[INFO]"
-        case .skipped: return "[SKIP]"
+        case .ok: "[ OK ]"
+        case .warning: "[WARN]"
+        case .info: "[INFO]"
+        case .skipped: "[SKIP]"
         }
     }
 

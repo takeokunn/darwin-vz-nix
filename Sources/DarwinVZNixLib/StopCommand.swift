@@ -18,22 +18,32 @@ public struct Stop: AsyncParsableCommand {
         let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
         let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
-        guard let pid = VMManager.readPID(from: pidFileURL) else {
+        guard let record = VMManager.readPIDRecord(from: pidFileURL) else {
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
             throw CleanExit.message("No running VM found (PID file not found).")
         }
 
-        guard VMManager.isProcessRunning(pid: pid) else {
-            try? FileManager.default.removeItem(at: pidFileURL)
+        guard VMManager.isProcessRunning(pid: record.pid) else {
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
             throw CleanExit.message("No running VM found (stale PID file cleaned up).")
         }
 
-        let stopped = try VMManager.terminateProcess(pid: pid, pidFileURL: pidFileURL, force: force)
+        guard VMManager.processMatchesRecord(pid: record.pid, expectedExecutablePath: record.executablePath) else {
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+            throw CleanExit.message("No running VM found (PID belongs to another process).")
+        }
+
+        let stopped = try VMManager.terminateProcess(
+            pid: record.pid,
+            pidFileURL: pidFileURL,
+            force: force,
+            expectedExecutablePath: record.executablePath
+        )
         if !stopped {
-            throw VMManagerError.stopFailed("VM process \(pid) could not be stopped.")
+            throw VMManagerError.stopFailed("VM process \(record.pid) could not be stopped.")
         }
 
         // Clean up state files after stop
-        let guestIPFileURL = stateDirectory.appendingPathComponent("guest-ip")
-        try? FileManager.default.removeItem(at: guestIPFileURL)
+        Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
     }
 }

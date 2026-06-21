@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible darwin-vz-nix problem
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Include the exact commands or nix-darwin configuration needed to reproduce the issue.
+      placeholder: |
+        nix run github:takeokunn/darwin-vz-nix -- start ...
+        nix run github:takeokunn/darwin-vz-nix -- status --json
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include host and Nix details.
+      value: |
+        - macOS version:
+        - Hardware:
+        - Nix version:
+        - darwin-vz-nix revision or release:
+        - nix-darwin revision, if applicable:
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste relevant output from doctor, status, logs, or failing Nix commands.
+      placeholder: |
+        nix run github:takeokunn/darwin-vz-nix -- doctor
+        nix run github:takeokunn/darwin-vz-nix -- status --json
+    validations:
+      required: false

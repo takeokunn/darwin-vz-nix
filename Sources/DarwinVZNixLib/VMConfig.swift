@@ -5,6 +5,7 @@ enum VMConfigError: LocalizedError {
     case insufficientMemory(UInt64)
     case kernelNotFound(URL, hint: String?)
     case initrdNotFound(URL, hint: String?)
+    case systemInitNotFound(URL)
     case invalidDiskSize(String)
     case stateDirectoryCreationFailed(String)
 
@@ -17,17 +18,29 @@ enum VMConfigError: LocalizedError {
         case let .kernelNotFound(url, hint):
             var msg = "Kernel image not found at: \(url.path)"
             if let hint { msg += "\nHint: \(hint)" }
+            msg += "\n\(VMConfigError.guestArtifactGuidance)"
             return msg
         case let .initrdNotFound(url, hint):
             var msg = "Initrd image not found at: \(url.path)"
             if let hint { msg += "\nHint: \(hint)" }
+            msg += "\n\(VMConfigError.guestArtifactGuidance)"
             return msg
+        case let .systemInitNotFound(url):
+            return "NixOS system init not found at: \(url.path)"
         case let .invalidDiskSize(size):
             return "Invalid disk size format: '\(size)'. Use format like '100G', '512M', or bytes."
         case let .stateDirectoryCreationFailed(path):
             return "Failed to create state directory at: \(path)"
         }
     }
+
+    /// Shared first-run guidance for missing guest artifacts (kernel/initrd/system).
+    static let guestArtifactGuidance = """
+    The guest kernel, initrd, and system are aarch64-linux artifacts. Build or fetch them with:
+      nix run .#build-guest-artifacts
+    This writes ./result-kernel/Image, ./result-initrd/initrd, and ./result-system. Then:
+      darwin-vz-nix start --kernel ./result-kernel/Image --initrd ./result-initrd/initrd --system ./result-system
+    """
 }
 
 struct VMConfig {
@@ -66,8 +79,40 @@ struct VMConfig {
         stateDirectory.appendingPathComponent("ssh", isDirectory: true)
     }
 
+    /// Directory shared into the guest via VirtioFS. Contains ONLY the public
+    /// key — never the private key. See `VMConfig.sshPublicShareDirectory`.
+    static func sshPublicShareDirectory(for stateDirectory: URL) -> URL {
+        stateDirectory.appendingPathComponent("ssh-pub", isDirectory: true)
+    }
+
     static func guestIPFileURL(for stateDirectory: URL) -> URL {
         stateDirectory.appendingPathComponent("guest-ip")
+    }
+
+    /// Deterministic per-state-directory MAC address.
+    ///
+    /// Multiple VMs on the same host share one NAT segment; a fixed MAC would
+    /// collide and corrupt DHCP-lease/ARP-based IP discovery (two guests, one
+    /// MAC). We keep the recognizable locally-administered unicast prefix
+    /// `02:da:72` ("darVZ") and derive the last three octets from a stable
+    /// FNV-1a hash of the resolved state-directory path, so each state directory
+    /// gets its own stable address while a given VM's MAC never changes.
+    ///
+    /// Note: this implies a single VM per state directory (the documented model).
+    static func macAddress(for stateDirectory: URL) -> String {
+        // Keep the recognizable OUI prefix (first three octets) from the base MAC
+        // constant, and derive the host-specific last three octets per state dir.
+        let prefix = Constants.macAddressString.split(separator: ":").prefix(3).joined(separator: ":")
+        let path = stateDirectory.resolvingSymlinksInPath().path
+        var hash: UInt32 = 2_166_136_261 // FNV-1a 32-bit offset basis
+        for byte in path.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 16_777_619
+        }
+        let octet1 = (hash >> 16) & 0xFF
+        let octet2 = (hash >> 8) & 0xFF
+        let octet3 = hash & 0xFF
+        return String(format: "\(prefix):%02x:%02x:%02x", octet1, octet2, octet3)
     }
 
     init(
@@ -104,6 +149,16 @@ struct VMConfig {
         VMConfig.sshDirectory(for: stateDirectory)
     }
 
+    /// Public-key-only directory exposed to the (untrusted) guest over VirtioFS.
+    var sshPublicShareDirectory: URL {
+        VMConfig.sshPublicShareDirectory(for: stateDirectory)
+    }
+
+    /// Deterministic per-state-directory MAC for this VM's network device.
+    var macAddress: String {
+        VMConfig.macAddress(for: stateDirectory)
+    }
+
     var sshKeyURL: URL {
         VMConfig.sshKeyURL(for: stateDirectory)
     }
@@ -131,7 +186,7 @@ struct VMConfig {
             throw VMConfigError.insufficientMemory(memory)
         }
 
-        if !FileManager.default.fileExists(atPath: kernelURL.path) {
+        if !Self.isRegularFile(kernelURL) {
             let dir = kernelURL.deletingLastPathComponent()
             var hint: String?
             if FileManager.default.fileExists(atPath: dir.appendingPathComponent("initrd").path) {
@@ -141,7 +196,7 @@ struct VMConfig {
             throw VMConfigError.kernelNotFound(kernelURL, hint: hint)
         }
 
-        if !FileManager.default.fileExists(atPath: initrdURL.path) {
+        if !Self.isRegularFile(initrdURL) {
             let dir = initrdURL.deletingLastPathComponent()
             var hint: String?
             if FileManager.default.fileExists(atPath: dir.appendingPathComponent("Image").path) {
@@ -151,12 +206,26 @@ struct VMConfig {
             throw VMConfigError.initrdNotFound(initrdURL, hint: hint)
         }
 
+        if let systemURL {
+            let initURL = systemURL.appendingPathComponent("init")
+            guard Self.isRegularFile(initURL) else {
+                throw VMConfigError.systemInitNotFound(initURL)
+            }
+        }
+
         _ = try VMConfig.parseDiskSize(diskSize)
     }
 
     func ensureStateDirectory() throws {
         let fm = FileManager.default
-        if !fm.fileExists(atPath: stateDirectory.path) {
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: stateDirectory.path, isDirectory: &isDirectory) {
+            guard isDirectory.boolValue else {
+                throw VMConfigError.stateDirectoryCreationFailed(
+                    "\(stateDirectory.path): exists and is not a directory"
+                )
+            }
+        } else {
             do {
                 try fm.createDirectory(
                     at: stateDirectory,
@@ -169,6 +238,15 @@ struct VMConfig {
                 )
             }
         }
+    }
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        guard
+            let fileType = try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType
+        else {
+            return false
+        }
+        return fileType == .typeRegular
     }
 
     // MARK: - Disk Size Parsing
@@ -192,7 +270,11 @@ struct VMConfig {
                 guard let value = UInt64(numberPart), value > 0 else {
                     throw VMConfigError.invalidDiskSize(size)
                 }
-                return value * multiplier
+                let result = value.multipliedReportingOverflow(by: multiplier)
+                guard !result.overflow, result.partialValue > 0 else {
+                    throw VMConfigError.invalidDiskSize(size)
+                }
+                return result.partialValue
             }
         }
 

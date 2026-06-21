@@ -9,7 +9,7 @@
   boot.loader.grub.enable = false;
 
   # Mount /nix/store as writable. Our overlay (host VirtioFS as lowerdir +
-  # tmpfs upperdir) provides the writable layer the nix-daemon needs.
+  # root-disk upperdir) provides the writable layer the nix-daemon needs.
   # Without this, NixOS remounts the overlay as read-only and lock file
   # creation in /nix/store fails with "Permission denied".
   boot.nixStoreMountOpts = [ "rw" ];
@@ -28,30 +28,32 @@
     "overlay"
   ];
 
-  # Extra utilities needed in initrd for first-boot disk formatting
-  # Use mke2fs directly (mkfs.ext4 is a symlink that copy_bin_and_libs may not handle)
-  boot.initrd.extraUtilsCommands = ''
-    copy_bin_and_libs ${pkgs.e2fsprogs}/bin/mke2fs
-    copy_bin_and_libs ${pkgs.util-linux}/bin/blkid
-  '';
-
-  # Auto-format root disk on first boot
-  boot.initrd.postDeviceCommands = lib.mkBefore ''
-    if ! blkid /dev/vda &>/dev/null; then
-      echo "First boot: formatting /dev/vda as ext4..."
-      mke2fs -t ext4 -L root /dev/vda
-    fi
-  '';
-
-  # Ensure overlay directories exist on root ext4 filesystem
-  # Required because /nix/.rw-store is a plain directory on root (not a
-  # separate mount), so nothing creates it automatically. mkdir -p is
-  # idempotent, so this is safe on every boot.
-  boot.initrd.postMountCommands = ''
-    mkdir -p /mnt-root/nix/.rw-store/store
-    mkdir -p /mnt-root/nix/.rw-store/work
-    mkdir -p /mnt-root/nix/var/nix/db
-  '';
+  # Create the overlay's writable upper/work directories on the root disk BEFORE
+  # the /nix/store overlay is mounted in the initrd. The overlay mount
+  # (neededForBoot) appears as `sysroot-nix-store.mount`; without an explicit
+  # ordering edge the mount could race ahead of directory creation and fail.
+  boot.initrd.systemd.services.prepare-nix-var = {
+    description = "Prepare writable Nix state directories";
+    requiredBy = [
+      "initrd-switch-root.target"
+      "sysroot-nix-store.mount"
+    ];
+    before = [
+      "initrd-switch-root.target"
+      "sysroot-nix-store.mount"
+    ];
+    after = [ "sysroot.mount" ];
+    unitConfig = {
+      DefaultDependencies = false;
+      RequiresMountsFor = "/sysroot";
+    };
+    serviceConfig.Type = "oneshot";
+    script = ''
+      mkdir -p /sysroot/nix/var/nix/db
+      mkdir -p /sysroot/nix/.rw-store/store
+      mkdir -p /sysroot/nix/.rw-store/work
+    '';
+  };
 
   # LZ4 compression for initrd (legacy format for kernel compatibility)
   boot.initrd.compressor = lib.getExe pkgs.lz4;

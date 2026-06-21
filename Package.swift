@@ -5,11 +5,12 @@ import PackageDescription
 let package = Package(
     name: "darwin-vz-nix",
     platforms: [.macOS(.v13)],
+    products: [
+        .executable(name: "darwin-vz-nix", targets: ["darwin-vz-nix"]),
+        .library(name: "DarwinVZNixLib", targets: ["DarwinVZNixLib"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", "1.5.0"..<"1.6.0"),
-        // Required: built-in Testing module has cross-import overlay issues
-        // with CommandLineTools-only (no Xcode) setups.
-        .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0"),
     ],
     targets: [
         .target(
@@ -31,7 +32,6 @@ let package = Package(
             name: "darwin-vz-nix-tests",
             dependencies: [
                 .target(name: "DarwinVZNixLib"),
-                .product(name: "Testing", package: "swift-testing"),
             ]
         ),
     ],

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and usage help
+    url: https://github.com/takeokunn/darwin-vz-nix/discussions
+    about: Ask configuration and usage questions in Discussions.
