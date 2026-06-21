@@ -92,6 +92,14 @@
     # abort on the first substituter hash mismatch instead of recovering.
     fallback = true;
 
+    # No remote builders here (this guest IS the builder), so disable the build
+    # hook. Leaving it enabled makes the daemon spawn `nix __build-remote` for
+    # every build just to decline; that child links libraries from the host's
+    # live VirtioFS /nix/store and can transiently fail to load (e.g. libsqlite3)
+    # under concurrent host store activity, killing the build with "unexpected
+    # EOF reading a line". With no builders, the hook serves no purpose.
+    build-hook = "";
+
     # Long-lived builder: reclaim disk automatically under pressure so the VM
     # never wedges on a full overlay upperdir. The nix-daemon starts GCing when
     # free space drops below min-free and stops once max-free is available.
