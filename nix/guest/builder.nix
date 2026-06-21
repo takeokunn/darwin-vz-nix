@@ -100,19 +100,29 @@
     # EOF reading a line". With no builders, the hook serves no purpose.
     build-hook = "";
 
-    # Long-lived builder: reclaim disk automatically under pressure so the VM
-    # never wedges on a full overlay upperdir. The nix-daemon starts GCing when
-    # free space drops below min-free and stops once max-free is available.
-    min-free = 1073741824; # 1 GiB
-    max-free = 4294967296; # 4 GiB
+    # CRITICAL: Nix garbage collection MUST stay disabled in this guest.
+    #
+    # The guest's /nix/store is an overlay whose lowerdir is the HOST's store,
+    # shared read-only over VirtioFS (see the overlay mount in boot.nix). When
+    # the guest's nix-daemon GCs a path that lives only on the read-only
+    # lowerdir, it cannot actually unlink it — instead overlayfs records a
+    # *whiteout* (a 0:0 character device) in the writable upperdir, which then
+    # MASKS the host path from the guest. GC thus frees no space yet silently
+    # hides store paths the running toolchain still depends on. Observed in
+    # practice: a GC sweep whiteouts libzstd/libcurl/libarchive out from under
+    # the live `nix`/`curl` binaries, progressively bricking the VM mid-build
+    # ("error while loading shared libraries: libzstd.so.1: cannot open ...").
+    #
+    # Disk reclamation on this overlay is the host's responsibility (drop the
+    # rw upperdir / recreate the state disk), never the guest's. So:
+    #   - no min-free/max-free  -> no real-time pressure GC inside the daemon
+    #   - nix.gc.automatic=false -> no periodic nix-gc.service whiteout sweeps
+    min-free = 0;
   };
 
-  # Periodic GC as a backstop to the min-free/max-free pressure GC above.
-  nix.gc = {
-    automatic = true;
-    dates = "weekly";
-    options = "--delete-older-than 14d";
-  };
+  # Never run automatic GC: on the overlay-over-read-only-host store it only
+  # creates whiteouts that mask shared paths (see the note above).
+  nix.gc.automatic = false;
 
   # NOTE (future optimization): the host's /nix/store is shared read-only as the
   # overlay lowerdir, but those paths are not registered in the guest's Nix DB,
