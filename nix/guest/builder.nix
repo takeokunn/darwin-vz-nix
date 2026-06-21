@@ -87,6 +87,11 @@
     max-jobs = 4;
     builders-use-substitutes = true;
 
+    # Build from source when a substitute is unavailable or fails its hash check
+    # (e.g. a transient bad cache entry). Without this, deploy-rs/remote builds
+    # abort on the first substituter hash mismatch instead of recovering.
+    fallback = true;
+
     # Long-lived builder: reclaim disk automatically under pressure so the VM
     # never wedges on a full overlay upperdir. The nix-daemon starts GCing when
     # free space drops below min-free and stops once max-free is available.

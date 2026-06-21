@@ -211,6 +211,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         }
 
         try config.ensureStateDirectory()
+        pinArtifactsAgainstGC()
         try ensureDiskImage()
 
         let vmConfig = try createVMConfiguration()
@@ -339,6 +340,56 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     func guestDidStop(_: VZVirtualMachine) {
         DaemonLogger.vm.info("VM guest has stopped.")
         finalizeShutdown(exitCode: 0)
+    }
+
+    // MARK: - GC Protection
+
+    /// Pin the guest kernel/initrd/system store paths as GC roots while the VM
+    /// runs. The guest shares the host's LIVE /nix/store read-only over VirtioFS;
+    /// if the host garbage-collects a path the running guest depends on (e.g. the
+    /// nix-daemon's libsqlite3), the guest faults mid-operation. Rooting the guest
+    /// closure prevents the host from collecting it out from under the VM.
+    /// Best-effort: failures (e.g. nix-store unavailable) are non-fatal.
+    private func pinArtifactsAgainstGC() {
+        let fm = FileManager.default
+        let gcrootsDir = config.stateDirectory.appendingPathComponent("gcroots", isDirectory: true)
+        try? fm.createDirectory(at: gcrootsDir, withIntermediateDirectories: true)
+
+        var artifacts: [(String, URL)] = [
+            ("kernel", config.kernelURL),
+            ("initrd", config.initrdURL),
+        ]
+        if let systemURL = config.systemURL {
+            artifacts.append(("system", systemURL))
+        }
+
+        for (name, url) in artifacts {
+            guard let storePath = Self.enclosingStorePath(of: url) else { continue }
+            let rootLink = gcrootsDir.appendingPathComponent(name)
+            try? fm.removeItem(at: rootLink)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["nix-store", "--add-root", rootLink.path, "--realise", storePath]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                DaemonLogger.vm.warning("Could not create GC root for \(name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Return the enclosing `/nix/store/<hash-name>` path for a file URL, or nil
+    /// if it does not resolve under the Nix store.
+    static func enclosingStorePath(of url: URL) -> String? {
+        let resolved = url.resolvingSymlinksInPath().path
+        let prefix = "/nix/store/"
+        guard resolved.hasPrefix(prefix) else { return nil }
+        let rest = resolved.dropFirst(prefix.count)
+        guard let first = rest.split(separator: "/", maxSplits: 1).first else { return nil }
+        return prefix + first
     }
 
     // MARK: - Disk Image Management

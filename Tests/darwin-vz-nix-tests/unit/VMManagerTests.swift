@@ -372,3 +372,12 @@ struct VMManagerTests {
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
     }
 }
+
+extension VMManagerTests {
+    @Test
+    func enclosingStorePathExtractsRoot() {
+        #expect(VMManager.enclosingStorePath(of: URL(fileURLWithPath: "/nix/store/abc123-guest-artifacts/system")) == "/nix/store/abc123-guest-artifacts")
+        #expect(VMManager.enclosingStorePath(of: URL(fileURLWithPath: "/nix/store/abc123-guest-artifacts")) == "/nix/store/abc123-guest-artifacts")
+        #expect(VMManager.enclosingStorePath(of: URL(fileURLWithPath: "/tmp/not-store")) == nil)
+    }
+}
