@@ -21,6 +21,10 @@
     isNormalUser = true;
     group = "builder";
     home = "/home/builder";
+    # In the `nixbld` group so that builds driven over `ssh-ng://builder@guest`
+    # (deploy-rs, distributed builds) — which run as `builder`, not via the root
+    # daemon — can write to the multi-user /nix/store overlay.
+    extraGroups = [ "nixbld" ];
   };
   users.groups.builder = { };
 
