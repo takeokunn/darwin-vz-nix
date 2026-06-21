@@ -63,10 +63,17 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     func createVMConfiguration() throws -> VZVirtualMachineConfiguration {
         let vmConfig = VZVirtualMachineConfiguration()
 
-        // Boot loader
+        // Boot loader.
+        // NOTE: deliberately no `root=` parameter. The NixOS guest uses a
+        // systemd-initrd whose generated fstab already defines the root mount
+        // (/dev/vda, with x-systemd.makefs/growfs). Passing `root=/dev/vda` as
+        // well makes systemd-fstab-generator try to create sysroot.mount twice
+        // and fail (exit 1), which silently breaks makefs (the disk is never
+        // formatted), the rw remount, and overlay setup — dropping the guest to
+        // emergency mode. Letting the initrd own the root mount fixes all of it.
         let bootLoader = VZLinuxBootLoader(kernelURL: config.kernelURL)
         bootLoader.initialRamdiskURL = config.initrdURL
-        var cmdline = "console=hvc0 root=/dev/vda"
+        var cmdline = "console=hvc0"
         if let systemURL = config.systemURL {
             cmdline += " init=\(systemURL.path)/init"
         }
