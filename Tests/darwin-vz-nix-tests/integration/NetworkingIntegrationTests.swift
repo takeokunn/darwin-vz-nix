@@ -160,6 +160,28 @@ struct NetworkingIntegrationTests {
     }
 
     @Test
+    func removeKnownHostEntryRefusesSymlink() throws {
+        // A symlink standing in for the known_hosts file must be refused, so a
+        // root daemon can't be tricked into rewriting the link's target (e.g.
+        // /etc/sudoers) via `ssh-keygen -R`.
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let target = tempDir.appendingPathComponent("protected")
+        try "PROTECTED\n".write(to: target, atomically: true, encoding: .utf8)
+        let link = tempDir.appendingPathComponent("known_hosts")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        NetworkManager.removeKnownHostEntry(host: "darwin-vz-nix", knownHostsURL: link)
+
+        // The symlink target is untouched (ssh-keygen never ran against it), and
+        // the symlink itself is left in place rather than followed.
+        #expect(try String(contentsOf: target, encoding: .utf8) == "PROTECTED\n")
+        let linkAttrs = try FileManager.default.attributesOfItem(atPath: link.path)
+        #expect(linkAttrs[.type] as? FileAttributeType == .typeSymbolicLink)
+    }
+
+    @Test
     func scrubKnownHostIgnoresMissingFile() {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }

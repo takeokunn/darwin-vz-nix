@@ -195,8 +195,8 @@ in
     environment.etc."newsyslog.d/darwin-vz-nix.conf" = lib.mkIf (!workingDirectoryHasWhitespace) {
       text = ''
         # logfilename                                    mode  count  size   when  flags
-        ${cfg.workingDirectory}/daemon.log                644   5      10240  *     J
-        ${cfg.workingDirectory}/console.log               644   5      10240  *     J
+        ${cfg.workingDirectory}/daemon.log                600   5      10240  *     J
+        ${cfg.workingDirectory}/console.log               600   5      10240  *     J
       '';
     };
 

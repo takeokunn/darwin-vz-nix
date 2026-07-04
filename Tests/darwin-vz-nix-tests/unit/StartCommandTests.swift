@@ -117,6 +117,27 @@ struct StartCommandTests {
         }
     }
 
+    @Test
+    func stateDirectoryLockIsExclusive() {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        // First acquisition succeeds and holds the lock.
+        let first = Start.tryLockStateDirectory(stateDirectory)
+        #expect(first >= 0)
+
+        // A second, concurrent acquisition on the same state directory must fail
+        // (this is what stops two `start`s from opening disk.img read-write).
+        let second = Start.tryLockStateDirectory(stateDirectory)
+        #expect(second < 0)
+
+        // Releasing the first lets a later acquisition succeed again.
+        close(first)
+        let third = Start.tryLockStateDirectory(stateDirectory)
+        #expect(third >= 0)
+        close(third)
+    }
+
     private func makeConfig(stateDirectory: URL) throws -> VMConfig {
         let kernel = stateDirectory.appendingPathComponent("Image")
         let initrd = stateDirectory.appendingPathComponent("initrd")

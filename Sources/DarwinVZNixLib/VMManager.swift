@@ -91,7 +91,12 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         )
         vmConfig.cpuCount = coreCount
 
-        let memoryBytes = UInt64(config.memory) * 1024 * 1024
+        // Saturating multiply: a preposterous `--memory` (MB) would otherwise
+        // overflow the MB→bytes conversion and trap (crash) instead of being
+        // clamped. On overflow, fall through to UInt64.max, which the min()
+        // below caps to the framework's maximum allowed memory size.
+        let (rawMemoryBytes, memoryOverflow) = config.memory.multipliedReportingOverflow(by: 1024 * 1024)
+        let memoryBytes = memoryOverflow ? UInt64.max : rawMemoryBytes
         let memorySize = max(
             VZVirtualMachineConfiguration.minimumAllowedMemorySize,
             min(memoryBytes, VZVirtualMachineConfiguration.maximumAllowedMemorySize)
@@ -128,8 +133,19 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         // for a long-lived builder that may spike during heavy builds.
         vmConfig.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
 
-        // Serial console — write to console.log file and optionally tee to stderr
-        FileManager.default.createFile(atPath: config.consoleLogURL.path, contents: nil)
+        // Serial console — write to console.log file and optionally tee to stderr.
+        // 0600: the serial console captures guest boot output, which can include
+        // secrets pulled into a build. Keep it private, consistent with disk.img.
+        FileManager.default.createFile(
+            atPath: config.consoleLogURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        )
+        // Re-assert 0600 in case the file already existed with looser perms.
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: config.consoleLogURL.path
+        )
         let consoleLogHandle = try FileHandle(forWritingTo: config.consoleLogURL)
         // Retain for a clean flush/close during shutdown.
         self.consoleLogHandle = consoleLogHandle

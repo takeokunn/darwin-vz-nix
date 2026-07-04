@@ -81,6 +81,21 @@ public struct Start: AsyncParsableCommand {
         }
         try config.ensureStateDirectory()
 
+        // Take an exclusive, process-lifetime lock on the state directory before
+        // touching the disk image. The PID-file guard above is check-then-act
+        // and the PID file is not written until much later, so two `start` runs
+        // racing on the same --state-dir could both open disk.img read-write and
+        // corrupt the guest filesystem. flock closes that window; the descriptor
+        // is held for the process lifetime and released automatically on exit.
+        let lockFD = Self.tryLockStateDirectory(config.stateDirectory)
+        guard lockFD >= 0 else {
+            try exitOperational(
+                "Could not acquire the VM state lock for \(config.stateDirectory.path). "
+                    + "Another VM is already starting or running for this state directory."
+            )
+        }
+        Self.heldStateLockFD = lockFD
+
         let networkManager = NetworkManager(stateDirectory: config.stateDirectory)
         try networkManager.ensureSSHKeys()
 
@@ -140,6 +155,25 @@ public struct Start: AsyncParsableCommand {
         // Using an infinite AsyncStream avoids CheckedContinuation leak warnings.
         let stream = AsyncStream<Void> { _ in }
         for await _ in stream {}
+    }
+
+    /// Holds the state-directory lock descriptor for the process lifetime so the
+    /// `flock` is not released early by the fd being closed.
+    private nonisolated(unsafe) static var heldStateLockFD: Int32 = -1
+
+    /// Try to take an exclusive, non-blocking `flock` on `<stateDirectory>/vm.lock`.
+    /// Returns the open descriptor on success (caller must keep it open to hold
+    /// the lock), or -1 if the lock is already held or the file can't be opened.
+    /// Separated from `run()` so the exclusion can be unit-tested.
+    static func tryLockStateDirectory(_ stateDirectory: URL) -> Int32 {
+        let lockPath = stateDirectory.appendingPathComponent("vm.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return -1 }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            close(fd)
+            return -1
+        }
+        return fd
     }
 
     static func cleanupRuntimeFilesBeforeStart(config: VMConfig) throws {

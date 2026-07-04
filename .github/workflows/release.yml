@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
@@ -77,6 +79,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
@@ -151,6 +155,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix

@@ -381,9 +381,18 @@ struct NetworkManager {
     /// ssh_config `Host` alias). Best-effort: a missing file or ssh-keygen
     /// failure is non-fatal.
     static func removeKnownHostEntry(host: String, knownHostsURL: URL) {
-        guard FileManager.default.fileExists(atPath: knownHostsURL.path) else {
-            return
-        }
+        // Refuse to operate on a symlink. `scrubUserKnownHosts` runs this as the
+        // root/launchd daemon against a file inside an unprivileged user's
+        // `~/.ssh`; `ssh-keygen -R` follows symlinks, so a link swapped in for
+        // the file would make root rewrite whatever it points at (e.g.
+        // /etc/sudoers). Open O_NOFOLLOW — which fails with ELOOP on a symlink —
+        // and require a regular file. A missing file is silently skipped.
+        let fd = open(knownHostsURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        var st = stat()
+        let isRegularFile = fstat(fd, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
+        close(fd)
+        guard isRegularFile else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
         process.arguments = ["-R", host, "-f", knownHostsURL.path]
@@ -472,25 +481,21 @@ struct NetworkManager {
         let backupURL = URL(fileURLWithPath: knownHostsURL.path + ".old")
         try? FileManager.default.removeItem(at: backupURL)
 
-        guard FileManager.default.fileExists(atPath: knownHostsURL.path) else {
-            return
-        }
-
-        // Prefer chown by account name; fall back to the numeric uid via
-        // getpwnam if the name-based attribute proves unreliable.
-        do {
-            try FileManager.default.setAttributes(
-                [.ownerAccountName: consoleUser],
-                ofItemAtPath: knownHostsURL.path
-            )
-        } catch {
-            if let pw = getpwnam(consoleUser) {
-                try? FileManager.default.setAttributes(
-                    [.ownerAccountID: NSNumber(value: pw.pointee.pw_uid)],
-                    ofItemAtPath: knownHostsURL.path
-                )
-            }
-        }
+        // chown WITHOUT following symlinks. `setAttributes(ofItemAtPath:)` uses
+        // path-based chown(), which follows a symlink — so a link swapped into
+        // the user-owned `~/.ssh` between check and chown would redirect the
+        // root chown onto an arbitrary file (e.g. /etc/sudoers), handing the
+        // user ownership of it: a local privilege-escalation primitive. Instead
+        // open the path O_NOFOLLOW (fails with ELOOP on a symlink), confirm a
+        // regular file, and fchown the descriptor — which cannot be re-pointed
+        // by a later symlink swap.
+        guard let pw = getpwnam(consoleUser) else { return }
+        let fd = open(knownHostsURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return }
+        _ = fchown(fd, pw.pointee.pw_uid, pw.pointee.pw_gid)
     }
 
     /// The known_hosts file the `darwin-vz-nix ssh` subcommand pins guest host

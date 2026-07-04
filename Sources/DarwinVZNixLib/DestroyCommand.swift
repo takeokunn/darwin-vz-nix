@@ -73,6 +73,7 @@ public struct Destroy: AsyncParsableCommand {
         let itemsToDelete: [URL] = [
             stateDirectory.appendingPathComponent("disk.img"),
             stateDirectory.appendingPathComponent("vm.pid"),
+            stateDirectory.appendingPathComponent("vm.lock"),
             stateDirectory.appendingPathComponent("console.log"),
             stateDirectory.appendingPathComponent("guest-ip"),
             stateDirectory.appendingPathComponent("ssh", isDirectory: true),
