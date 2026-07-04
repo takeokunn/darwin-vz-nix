@@ -84,12 +84,15 @@ final class IdleMonitor {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return false
         }
-
+        // Drain the pipe BEFORE waiting: lsof output grows with the number of
+        // matching connections, and waitUntilExit() with an unread pipe
+        // deadlocks once it exceeds the 64 KB pipe buffer — which would wedge
+        // the idle monitor (and idle shutdown) permanently.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let output = String(data: data, encoding: .utf8) ?? ""
 
         return output.contains("ESTABLISHED")

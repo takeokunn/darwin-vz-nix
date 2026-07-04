@@ -419,6 +419,21 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         let fm = FileManager.default
 
         if fm.fileExists(atPath: diskURL.path) {
+            // The image is created once; a later --disk-size change cannot be
+            // applied to it (shrinking would corrupt the guest filesystem).
+            // Warn instead of silently ignoring the flag, so a user who raised
+            // the size doesn't chase mysterious ENOSPC failures in the guest.
+            if let attributes = try? fm.attributesOfItem(atPath: diskURL.path),
+               let existingSize = (attributes[.size] as? NSNumber)?.uint64Value,
+               let requestedSize = try? VMConfig.parseDiskSize(config.diskSize),
+               requestedSize != existingSize
+            {
+                DaemonLogger.vm.warning(
+                    "--disk-size \(config.diskSize) differs from the existing disk image "
+                        + "(\(existingSize / (1024 * 1024)) MB); keeping the existing size. "
+                        + "Run 'darwin-vz-nix destroy' to recreate the disk at the new size."
+                )
+            }
             return
         }
 

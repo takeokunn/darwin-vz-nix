@@ -87,6 +87,59 @@ struct DestroyCommandTests {
         )
     }
 
+    /// While a VM holds the exclusive state-directory flock — e.g. a `start`
+    /// that is still booting and has not written vm.pid yet, or a running VM
+    /// whose PID file was corrupted or hand-deleted — `destroy` must refuse to
+    /// delete state (disk.img is open read-write in that process).
+    @Test
+    func destroyRefusesWhileStateLockIsHeld() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        let disk = stateDirectory.appendingPathComponent("disk.img")
+        try Data("disk".utf8).write(to: disk)
+
+        let lockFD = Start.tryLockStateDirectory(stateDirectory)
+        #expect(lockFD >= 0)
+        defer { close(lockFD) }
+
+        var cmd = try Destroy.parse(["--yes", "--state-dir", stateDirectory.path])
+        await #expect(throws: ExitCode(ExitStatus.operational)) {
+            try await cmd.run()
+        }
+
+        // Nothing may have been deleted.
+        #expect(FileManager.default.fileExists(atPath: disk.path))
+    }
+
+    /// A missing state directory is not an error — and `destroy` must not
+    /// recreate it as a side effect (the flock guard creates vm.lock, which
+    /// would otherwise resurrect the directory).
+    @Test
+    func destroyOnMissingStateDirectorySucceeds() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        TestHelpers.removeTempItem(at: stateDirectory)
+
+        var cmd = try Destroy.parse(["--yes", "--state-dir", stateDirectory.path])
+        try await cmd.run()
+
+        #expect(!FileManager.default.fileExists(atPath: stateDirectory.path))
+    }
+
+    /// `destroy --yes` removes the (now empty) state directory itself.
+    @Test
+    func destroyRemovesEmptiedStateDirectory() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        try Data("disk".utf8).write(to: stateDirectory.appendingPathComponent("disk.img"))
+
+        var cmd = try Destroy.parse(["--yes", "--state-dir", stateDirectory.path])
+        try await cmd.run()
+
+        #expect(!FileManager.default.fileExists(atPath: stateDirectory.path))
+    }
+
     /// `destroy` must remove EVERY state artifact, including the Nix GC-root
     /// directory (which pins the guest kernel/initrd/system store paths) and the
     /// public-key VirtioFS share. Leaving `gcroots/` behind keeps store paths

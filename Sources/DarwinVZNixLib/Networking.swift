@@ -133,13 +133,16 @@ struct NetworkManager {
         process.standardError = FileHandle.nullDevice
 
         try process.run()
+        // Drain the pipe BEFORE waiting: waitUntilExit() with an unread pipe
+        // deadlocks once the child's output exceeds the 64 KB pipe buffer
+        // (child blocks in write(), parent blocks in wait).
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
             throw NetworkError.sshKeyGenerationFailed(process.terminationStatus)
         }
 
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let publicKey = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !publicKey.isEmpty else {
             throw NetworkError.sshKeyGenerationFailed(process.terminationStatus)
@@ -250,12 +253,13 @@ struct NetworkManager {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return false
         }
-
+        // Drain the pipe BEFORE waiting (see derivePublicKey for the deadlock rationale).
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        process.waitUntilExit()
+
         // ARP output format: "? (192.168.64.8) at 2:da:72:56:0:1 on bridge100 ..."
         // "(incomplete)" means no ARP response — the host is unreachable.
         guard let atRange = output.range(of: " at "),
@@ -324,12 +328,14 @@ struct NetworkManager {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return nil
         }
-
+        // Drain the pipe BEFORE waiting: `arp -an` output scales with the ARP
+        // table and can exceed the 64 KB pipe buffer on a busy network, which
+        // would deadlock IP discovery (see derivePublicKey).
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        process.waitUntilExit()
         return scanARPTableForMAC(output, expectedMAC: expectedMAC)
     }
 
@@ -398,7 +404,9 @@ struct NetworkManager {
         process.arguments = ["-R", host, "-f", knownHostsURL.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try? process.run()
+        // Only wait if the launch succeeded: waitUntilExit() on a process that
+        // never launched is undefined (NSTask may raise).
+        guard (try? process.run()) != nil else { return }
         process.waitUntilExit()
     }
 
@@ -451,11 +459,13 @@ struct NetworkManager {
         consoleUserProcess.standardOutput = stdoutPipe
         consoleUserProcess.standardError = FileHandle.nullDevice
         guard (try? consoleUserProcess.run()) != nil else { return }
+        // Drain the pipe BEFORE waiting (see derivePublicKey for the deadlock rationale).
+        let consoleUserData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         consoleUserProcess.waitUntilExit()
 
         guard
             let consoleUser = String(
-                data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                data: consoleUserData,
                 encoding: .utf8
             )?.trimmingCharacters(in: .whitespacesAndNewlines),
             !consoleUser.isEmpty,

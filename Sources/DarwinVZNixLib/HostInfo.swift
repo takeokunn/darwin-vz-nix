@@ -23,12 +23,13 @@ enum HostInfo {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return []
         }
-
+        // Drain the pipe BEFORE waiting: waitUntilExit() with an unread pipe
+        // deadlocks once the child's output exceeds the 64 KB pipe buffer.
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        process.waitUntilExit()
         return parseBridgeInterfaces(output)
     }
 }
