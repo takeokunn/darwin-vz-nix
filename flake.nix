@@ -594,6 +594,7 @@
                 customGuestHostName = customGuest.config.networking.hostName;
                 customGuestMarker = customGuest.config.environment.etc."darwin-vz-custom-marker".text;
                 customGuestAllowedUsers = customGuest.config.nix.settings.allowed-users;
+                builderExtraGroups = customGuest.config.users.users.builder.extraGroups;
                 initrdPrepareNixVarScript = customGuest.config.boot.initrd.systemd.services.prepare-nix-var.script;
               }
             );
@@ -628,6 +629,7 @@
             jq -e '.customGuestHostName == "darwin-vz-guest"' "$config_json" >/dev/null
             jq -e '.customGuestMarker == "ok"' "$config_json" >/dev/null
             jq -e '.customGuestAllowedUsers == ["builder"]' "$config_json" >/dev/null
+            jq -e '.builderExtraGroups | index("nixbld") | not' "$config_json" >/dev/null
             jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/store")' "$config_json" >/dev/null
             jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/work")' "$config_json" >/dev/null
 
