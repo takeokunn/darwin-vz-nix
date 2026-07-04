@@ -42,9 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - VirtioFS now shares **only** the SSH public key into the (untrusted) guest: the host materializes a dedicated `ssh-pub/` directory containing just `id_ed25519.pub`, and a guard refuses to build the share if any non-`.pub` file is present, so the private key can never leak to the guest
 - The guest builder account is no longer in the `wheel` group; remote Nix builds run through the nix-daemon, which already trusts it as a `trusted-user`. It is granted passwordless sudo so `deploy-rs` can activate a system generation as root over SSH, but the builds themselves need no sudo
 - Guest IP discovery is more robust: discovered addresses are validated as well-formed IPv4, the ARP-sweep fallback is gated behind repeated lease misses plus a TCP/22 liveness probe (so a stale ARP entry can't yield a dead IP), and polling backs off instead of spawning a subprocess every 500ms
-- `ssh` scrubs any stale host key for the guest IP before connecting, so a rebuilt VM that reuses a NAT address no longer hard-fails host-key verification
+- `start` scrubs any stale host key for the freshly discovered guest IP from the state-directory `known_hosts` once per boot, so a rebuilt VM that reuses a NAT address no longer hard-fails host-key verification — while `ssh` connections within a boot keep verifying against the pinned key (scrubbing per connection would have reduced `accept-new` to accepting any key on every connect)
 - Missing kernel/initrd errors now print copy-pasteable `nix run .#build-guest-artifacts` guidance, and `start --help` includes a worked first-run example
-- `disk.img` and the `guest-ip` file are created mode 0600; a free-space warning is emitted before allocating the (sparse) disk image
+- `disk.img` is created mode 0600 and the `guest-ip` file mode 0644 (it holds only a validated IPv4 string and must be readable by the unprivileged users whose `ssh darwin-vz-nix` ProxyCommand reads it); a free-space warning is emitted before allocating the (sparse) disk image
 - nix-darwin module defaults now point to this flake's guest kernel, initrd, and system artifacts, so typical users no longer need to wire artifact paths manually
 - Swift package builds and tests now use pinned local SwiftPM checkouts in Nix, avoiding automatic dependency resolution during derivation builds
 - Removed the unused `services.darwin-vz.extraNixOSConfig` option in favor of explicit guest flake outputs
@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Data integrity on stop**: graceful shutdown now sends an ACPI power-off and *waits* (up to 20s, via the `guestDidStop` delegate) for the guest to actually power off before the in-process VM exits, so the guest's `/nix/store` writes are no longer lost on a clean stop. SIGINT, SIGTERM, idle-timeout, and delegate shutdown paths now funnel through a single shutdown coordinator confined to the VM dispatch queue
+- `VMManager.virtualMachine` is now read/written only on the VM dispatch queue; `start` previously published it from the Swift cooperative pool, racing the queue-confined shutdown paths (signal handlers, idle monitor, delegate callbacks)
+- The idle monitor validates the `guest-ip` file content as a well-formed IPv4 address before passing it to `lsof`, and the `ssh darwin-vz-nix` ProxyCommand rejects a `guest-ip` file whose content is not a dotted-quad before handing it to `nc` (defense in depth — the file is only ever written with a validated IP)
+- The activation script resolves the console user's home directory from Directory Services (`dscacheutil`) instead of assuming `/Users/$CONSOLE_USER`, so accounts with relocated homes get the SSH key installed into their actual home
 - **Test suite under Nix**: the Swift toolchain is wrapped to strip AppleDouble `._*` resource-fork files from the `.pkg` payload, which otherwise make Swift's cross-import overlay resolver discover a phantom `._Foundation` module and break `swift test` entirely; a flake check guards against the regression
 - NixOS guest evaluation after the June 2026 nixpkgs initrd default change
 - SSH key repair now regenerates or derives a missing public key and restores strict key permissions

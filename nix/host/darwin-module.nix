@@ -172,7 +172,7 @@ in
       text = ''
         Host darwin-vz-nix
           User builder
-          ProxyCommand /bin/sh -c 'ip=$(/bin/cat -- "$1"); exec /usr/bin/nc "$ip" 22' sh ${guestIPFileShell}
+          ProxyCommand /bin/sh -c 'ip=$(/bin/cat -- "$1"); case "$ip" in *[!0-9.]*|"") echo "darwin-vz-nix: invalid guest IP in $1" >&2; exit 1;; esac; exec /usr/bin/nc "$ip" 22' sh ${guestIPFileShell}
           IdentityFile ~/.ssh/darwin-vz-nix
           StrictHostKeyChecking accept-new
           UserKnownHostsFile ~/.ssh/darwin-vz-nix_known_hosts
@@ -242,10 +242,22 @@ in
 
         # Auto-detect the console user (the logged-in macOS user)
         CONSOLE_USER=$(/usr/bin/stat -f '%Su' /dev/console)
-        if [ "$CONSOLE_USER" = "root" ]; then
-          USER_HOME="/var/root"
-        else
-          USER_HOME="/Users/$CONSOLE_USER"
+        # Resolve the real home directory from Directory Services rather than
+        # assuming /Users/$CONSOLE_USER: accounts with relocated homes would
+        # otherwise get the SSH key installed into a directory that is not
+        # their home (silently breaking `ssh darwin-vz-nix` for them).
+        # dscacheutil, not `dscl . -read ... NFSHomeDirectory`: for root, dscl
+        # renders the multi-valued attribute as one line
+        # ("NFSHomeDirectory: /var/root /private/var/root"), which would wreck
+        # the path; dscacheutil's `dir:` is always single-valued.
+        USER_HOME=$(/usr/bin/dscacheutil -q user -a name "$CONSOLE_USER" \
+          | /usr/bin/awk -F': ' '/^dir: /{print $2; exit}')
+        if [ -z "$USER_HOME" ]; then
+          if [ "$CONSOLE_USER" = "root" ]; then
+            USER_HOME="/var/root"
+          else
+            USER_HOME="/Users/$CONSOLE_USER"
+          fi
         fi
 
         USER_SSH_DIR="$USER_HOME/.ssh"

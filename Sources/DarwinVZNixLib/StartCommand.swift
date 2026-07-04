@@ -118,6 +118,11 @@ public struct Start: AsyncParsableCommand {
         do {
             let guestIP = try await networkManager.discoverGuestIP(notBefore: vmStartTime)
             try networkManager.writeGuestIP(guestIP)
+            // Evict stale host-key pins ONCE per boot, right after the IP is
+            // known. `ssh` connections during this boot then re-pin via
+            // accept-new and keep verifying against that pin; scrubbing any
+            // later (e.g. per connection) would defeat host-key pinning.
+            networkManager.scrubStateKnownHosts(ip: guestIP)
             NetworkManager.scrubUserKnownHosts()
             DaemonLogger.vm.info("Guest IP: \(guestIP)")
         } catch {

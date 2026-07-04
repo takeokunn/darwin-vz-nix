@@ -252,8 +252,8 @@ When using the CLI directly, state is stored at `~/.local/share/darwin-vz-nix/`.
 | `ssh/id_ed25519` | SSH private key (auto-generated; never shared with the guest) |
 | `ssh/id_ed25519.pub` | SSH public key |
 | `ssh-pub/id_ed25519.pub` | Public-key-only copy that is shared into the guest via VirtioFS |
-| `ssh/known_hosts` | Guest SSH host key cache (stale entries scrubbed on reconnect) |
-| `guest-ip` | Guest IP address (DHCP-discovered; mode 0600) |
+| `ssh/known_hosts` | Guest SSH host key cache (stale entry for the discovered IP scrubbed once per boot; connections within a boot verify against the pinned key) |
+| `guest-ip` | Guest IP address (DHCP-discovered; mode 0644 — holds only a validated IPv4 string, and the `ssh darwin-vz-nix` ProxyCommand reads it as an unprivileged user) |
 | `vm.pid` | Running VM process record (PID + executable path) |
 | `console.log` | VM console output |
 

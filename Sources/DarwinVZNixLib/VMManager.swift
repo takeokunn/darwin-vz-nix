@@ -38,6 +38,10 @@ enum VMManagerError: LocalizedError {
 }
 
 class VMManager: NSObject, VZVirtualMachineDelegate {
+    /// The live VM. Read/written only on `queue`: `start()` runs on the Swift
+    /// cooperative pool while shutdown (signal handlers, idle monitor, delegate
+    /// callbacks) runs on `queue`, so an unconfined write here would race the
+    /// `beginGracefulShutdown` read and could tear down a half-published VM.
     private var virtualMachine: VZVirtualMachine?
     private let config: VMConfig
     private let queue = DispatchQueue(label: "com.darwin-vz-nix.vm")
@@ -206,7 +210,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     // MARK: - VM Lifecycle
 
     func start() async throws {
-        guard virtualMachine == nil else {
+        guard queue.sync(execute: { virtualMachine == nil }) else {
             throw VMManagerError.vmAlreadyRunning
         }
 
@@ -218,7 +222,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
         let vm = VZVirtualMachine(configuration: vmConfig, queue: queue)
         vm.delegate = self
-        virtualMachine = vm
+        queue.sync { virtualMachine = vm }
 
         try await withPIDFile {
             // VZVirtualMachine requires all operations on the queue specified in init.
@@ -454,7 +458,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
             return try await operation()
         } catch {
             removePIDFile()
-            virtualMachine = nil
+            queue.sync { virtualMachine = nil }
             throw error
         }
     }

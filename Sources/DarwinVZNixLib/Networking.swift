@@ -415,10 +415,10 @@ struct NetworkManager {
     /// darwin-vz-nix` alias through a `ProxyCommand` — so ssh has no
     /// hostname/IP of its own to resolve and records the entry under the
     /// literal alias name, not the guest IP. `scrubKnownHost(ip:)` above (used
-    /// by the `darwin-vz-nix ssh` subcommand, which connects directly to the
+    /// by `start` to evict the state-directory pin for the freshly discovered
     /// IP) can't evict that: it validates its argument as an IPv4 address and
     /// would reject the alias outright. Without this, a guest whose host key
-    /// changes hard-fails every SSH path outside that one subcommand.
+    /// changes hard-fails every SSH path outside the `ssh` subcommand.
     ///
     /// Because `start` runs as the root/launchd daemon, scrubbing the console
     /// user's file leaves both the rewritten known_hosts and the `.old` backup
@@ -493,18 +493,31 @@ struct NetworkManager {
         }
     }
 
+    /// The known_hosts file the `darwin-vz-nix ssh` subcommand pins guest host
+    /// keys into. Scrubbed once per VM boot (see `scrubStateKnownHosts`), NOT
+    /// per connection — per-connection scrubbing would delete the pin right
+    /// before every handshake and reduce `accept-new` to "accept anything",
+    /// giving an on-segment MITM a fresh first-connection window every time.
+    func stateKnownHostsURL() -> URL {
+        stateDirectory.appendingPathComponent("ssh/known_hosts")
+    }
+
+    /// Evict the state-directory known_hosts entry for `ip`. Called by `start`
+    /// right after IP discovery: a recreated guest disk (new host key) or a NAT
+    /// IP handed to a different VM would otherwise hard-fail every later `ssh`
+    /// with "REMOTE HOST IDENTIFICATION HAS CHANGED". Connections within one
+    /// boot then keep full host-key verification against the re-pinned key.
+    func scrubStateKnownHosts(ip: String) {
+        Self.scrubKnownHost(ip: ip, knownHostsURL: stateKnownHostsURL())
+    }
+
     func connectSSH(extraArgs: [String] = []) throws {
         guard FileManager.default.fileExists(atPath: sshKeyPath.path) else {
             throw NetworkError.sshKeyNotFound(sshKeyPath.path)
         }
 
         let guestIP = try readGuestIP()
-        let knownHostsURL = stateDirectory.appendingPathComponent("ssh/known_hosts")
-
-        // The guest has no persistent host key: a rebuilt VM that reuses a NAT IP
-        // would otherwise trip "REMOTE HOST IDENTIFICATION HAS CHANGED" and hard-fail.
-        // Scrub any stale entry for this IP so accept-new can re-pin the new key.
-        Self.scrubKnownHost(ip: guestIP, knownHostsURL: knownHostsURL)
+        let knownHostsURL = stateKnownHostsURL()
 
         var arguments = [
             "/usr/bin/ssh",

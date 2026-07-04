@@ -67,7 +67,10 @@ final class IdleMonitor {
             contentsOf: guestIPFileURL,
             encoding: .utf8
         ).trimmingCharacters(in: .whitespacesAndNewlines),
-            !guestIP.isEmpty
+            // Defense in depth: only a well-formed dotted-quad may reach the
+            // lsof argument list. The file is written with a validated IP, but
+            // this probe must not trust file contents it did not produce.
+            NetworkManager.isValidIPv4(guestIP)
         else {
             return false
         }

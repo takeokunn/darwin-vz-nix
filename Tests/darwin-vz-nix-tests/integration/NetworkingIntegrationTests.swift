@@ -136,6 +136,30 @@ struct NetworkingIntegrationTests {
     }
 
     @Test
+    func scrubStateKnownHostsRemovesOnlyTargetIP() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let sshDir = tempDir.appendingPathComponent("ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true)
+        let knownHostsURL = sshDir.appendingPathComponent("known_hosts")
+        let entries = """
+        192.168.64.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4stale0000000000000000000000000000
+        192.168.64.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4fresh0000000000000000000000000000
+        """
+        try (entries + "\n").write(to: knownHostsURL, atomically: true, encoding: .utf8)
+
+        let manager = NetworkManager(stateDirectory: tempDir)
+        manager.scrubStateKnownHosts(ip: "192.168.64.9")
+
+        // Only the pin for the freshly discovered IP is evicted; other VMs'
+        // pins in the same state file must survive the per-boot scrub.
+        let remaining = try String(contentsOf: knownHostsURL, encoding: .utf8)
+        #expect(!remaining.contains("192.168.64.9"))
+        #expect(remaining.contains("192.168.64.10"))
+    }
+
+    @Test
     func scrubKnownHostIgnoresMissingFile() {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
