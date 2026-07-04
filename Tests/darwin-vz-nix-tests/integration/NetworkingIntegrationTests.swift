@@ -55,6 +55,34 @@ struct NetworkingIntegrationTests {
         #expect(posix == Int(0o644))
     }
 
+    // MARK: - Known Hosts Scrubbing
+
+    @Test
+    func scrubKnownHostRemovesStaleEntry() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let knownHostsURL = tempDir.appendingPathComponent("known_hosts")
+        let staleEntry = "192.168.64.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4stale0000000000000000000000000000\n"
+        try staleEntry.write(to: knownHostsURL, atomically: true, encoding: .utf8)
+
+        NetworkManager.scrubKnownHost(ip: "192.168.64.9", knownHostsURL: knownHostsURL)
+
+        let remaining = try String(contentsOf: knownHostsURL, encoding: .utf8)
+        #expect(!remaining.contains("192.168.64.9"))
+    }
+
+    @Test
+    func scrubKnownHostIgnoresMissingFile() {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let knownHostsURL = tempDir.appendingPathComponent("does-not-exist")
+        NetworkManager.scrubKnownHost(ip: "192.168.64.9", knownHostsURL: knownHostsURL)
+
+        #expect(!FileManager.default.fileExists(atPath: knownHostsURL.path))
+    }
+
     // MARK: - SSH Key Generation
 
     @Test

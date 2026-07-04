@@ -393,6 +393,52 @@ struct NetworkManager {
         process.waitUntilExit()
     }
 
+    /// Evict stale `darwin-vz-nix_known_hosts` entries for `ip`, for both the
+    /// current process's own user and the logged-in macOS console user.
+    ///
+    /// `nix/host/darwin-module.nix`'s `ssh_config.d` entry points plain
+    /// `ssh darwin-vz-nix` (interactive users) and `nix.buildMachines`
+    /// (root's nix-daemon, for distributed builds) at
+    /// `~/.ssh/darwin-vz-nix_known_hosts` — a file `scrubKnownHost` above
+    /// never touches, since that only runs for the `darwin-vz-nix ssh`
+    /// subcommand's own internal known_hosts. Without this, a guest reboot
+    /// that regenerates its (non-persistent) host key hard-fails every SSH
+    /// path outside that one subcommand. Best-effort: a failed lookup or
+    /// missing file is silently skipped.
+    static func scrubUserKnownHosts(ip: String) {
+        let knownHostsSuffix = ".ssh/darwin-vz-nix_known_hosts"
+
+        scrubKnownHost(
+            ip: ip,
+            knownHostsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(knownHostsSuffix)
+        )
+
+        let consoleUserProcess = Process()
+        consoleUserProcess.executableURL = URL(fileURLWithPath: "/usr/bin/stat")
+        consoleUserProcess.arguments = ["-f", "%Su", "/dev/console"]
+        let stdoutPipe = Pipe()
+        consoleUserProcess.standardOutput = stdoutPipe
+        consoleUserProcess.standardError = FileHandle.nullDevice
+        guard (try? consoleUserProcess.run()) != nil else { return }
+        consoleUserProcess.waitUntilExit()
+
+        guard
+            let consoleUser = String(
+                data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !consoleUser.isEmpty,
+            let consoleHome = NSHomeDirectoryForUser(consoleUser)
+        else {
+            return
+        }
+
+        scrubKnownHost(
+            ip: ip,
+            knownHostsURL: URL(fileURLWithPath: consoleHome).appendingPathComponent(knownHostsSuffix)
+        )
+    }
+
     func connectSSH(extraArgs: [String] = []) throws {
         guard FileManager.default.fileExists(atPath: sshKeyPath.path) else {
             throw NetworkError.sshKeyNotFound(sshKeyPath.path)
