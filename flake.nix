@@ -777,15 +777,8 @@
               grep -F 'DARWIN_VZ_NIX_SMOKE_STATE_DIR: ''${{ github.workspace }}/ci-artifacts/smoke-state' .github/workflows/release.yml >/dev/null
               grep -F 'DARWIN_VZ_NIX_SMOKE_KEEP_STATE: "1"' .github/workflows/release.yml >/dev/null
               grep -F "DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS: never" .github/workflows/release.yml >/dev/null
-              grep -E "if: env[.]CACHIX_CACHE_AVAILABLE == 'true' && inputs[.]cachix-auth-token == [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
-              grep -E "if: env[.]CACHIX_CACHE_AVAILABLE == 'true' && inputs[.]cachix-auth-token != [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
-              # The Cachix cache is an availability optimization: CI must probe it
-              # and skip Cachix integration (setup + pushes) when it is unreachable,
-              # instead of hard-failing every job on a deleted/private cache.
-              grep -F "Probe Cachix cache availability" .github/actions/setup-nix/action.yml >/dev/null
-              grep -F "CACHIX_CACHE_AVAILABLE == 'true'" .github/workflows/ci.yml >/dev/null
-              grep -F "CACHIX_CACHE_AVAILABLE == 'true'" .github/workflows/release.yml >/dev/null
-              grep -F "CACHIX_CACHE_AVAILABLE == 'true'" .github/workflows/vm-smoke.yml >/dev/null
+              grep -E "if: inputs[.]cachix-auth-token == [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
+              grep -E "if: inputs[.]cachix-auth-token != [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
               grep -F "Verify release tag matches package version" .github/workflows/release.yml >/dev/null
               grep -F "nix eval --raw .#packages.aarch64-darwin.darwin-vz-nix.version" .github/workflows/release.yml >/dev/null
               grep -F 'expected_tag="v''${package_version}"' .github/workflows/release.yml >/dev/null
