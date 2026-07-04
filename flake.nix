@@ -595,6 +595,11 @@
                 customGuestMarker = customGuest.config.environment.etc."darwin-vz-custom-marker".text;
                 customGuestAllowedUsers = customGuest.config.nix.settings.allowed-users;
                 builderExtraGroups = customGuest.config.users.users.builder.extraGroups;
+                # Close the other two paths by which `builder` could land in the
+                # nixbld build-users group (primary group, or the group's own
+                # members list), not just `extraGroups`.
+                builderPrimaryGroup = customGuest.config.users.users.builder.group;
+                nixbldGroupMembers = customGuest.config.users.groups.nixbld.members;
                 initrdPrepareNixVarScript = customGuest.config.boot.initrd.systemd.services.prepare-nix-var.script;
               }
             );
@@ -630,6 +635,8 @@
             jq -e '.customGuestMarker == "ok"' "$config_json" >/dev/null
             jq -e '.customGuestAllowedUsers == ["builder"]' "$config_json" >/dev/null
             jq -e '.builderExtraGroups | index("nixbld") | not' "$config_json" >/dev/null
+            jq -e '.builderPrimaryGroup != "nixbld"' "$config_json" >/dev/null
+            jq -e '.nixbldGroupMembers | index("builder") | not' "$config_json" >/dev/null
             jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/store")' "$config_json" >/dev/null
             jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/work")' "$config_json" >/dev/null
 

@@ -419,6 +419,13 @@ struct NetworkManager {
     /// IP) can't evict that: it validates its argument as an IPv4 address and
     /// would reject the alias outright. Without this, a guest whose host key
     /// changes hard-fails every SSH path outside that one subcommand.
+    ///
+    /// Because `start` runs as the root/launchd daemon, scrubbing the console
+    /// user's file leaves both the rewritten known_hosts and the `.old` backup
+    /// `ssh-keygen -R` drops root-owned — which breaks the user's plain `ssh
+    /// darwin-vz-nix` (it can no longer append the new host key). So the
+    /// console-user branch chowns the file back to that user and deletes the
+    /// root-owned `.old` sibling afterward.
     /// Best-effort: a failed lookup or missing file is silently skipped.
     static func scrubUserKnownHosts() {
         let knownHostsSuffix = ".ssh/darwin-vz-nix_known_hosts"
@@ -448,10 +455,42 @@ struct NetworkManager {
             return
         }
 
-        removeKnownHostEntry(
-            host: sshAlias,
-            knownHostsURL: URL(fileURLWithPath: consoleHome).appendingPathComponent(knownHostsSuffix)
-        )
+        let consoleKnownHostsURL = URL(fileURLWithPath: consoleHome).appendingPathComponent(knownHostsSuffix)
+        removeKnownHostEntry(host: sshAlias, knownHostsURL: consoleKnownHostsURL)
+        restoreConsoleUserOwnership(of: consoleKnownHostsURL, to: consoleUser)
+    }
+
+    /// Restore ownership of a foreign (console-user) known_hosts file to
+    /// `consoleUser` after a root scrub, and delete the root-owned `.old`
+    /// backup `ssh-keygen -R` leaves behind. Without this the user's plain
+    /// `ssh darwin-vz-nix` can't append the new host key (the file flips to
+    /// root:wheel 0600). Best-effort: any failure must not crash `start`.
+    private static func restoreConsoleUserOwnership(of knownHostsURL: URL, to consoleUser: String) {
+        // ssh-keygen -R rewrites in place and leaves a "<file>.old" backup; both
+        // become root-owned when the scrub runs as the daemon. Drop the backup
+        // so it can't linger root-owned.
+        let backupURL = URL(fileURLWithPath: knownHostsURL.path + ".old")
+        try? FileManager.default.removeItem(at: backupURL)
+
+        guard FileManager.default.fileExists(atPath: knownHostsURL.path) else {
+            return
+        }
+
+        // Prefer chown by account name; fall back to the numeric uid via
+        // getpwnam if the name-based attribute proves unreliable.
+        do {
+            try FileManager.default.setAttributes(
+                [.ownerAccountName: consoleUser],
+                ofItemAtPath: knownHostsURL.path
+            )
+        } catch {
+            if let pw = getpwnam(consoleUser) {
+                try? FileManager.default.setAttributes(
+                    [.ownerAccountID: NSNumber(value: pw.pointee.pw_uid)],
+                    ofItemAtPath: knownHostsURL.path
+                )
+            }
+        }
     }
 
     func connectSSH(extraArgs: [String] = []) throws {
