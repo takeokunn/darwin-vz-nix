@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guest `/run/rosetta` mount is now `nofail`, so `start --no-rosetta` (or the darwin module with `rosetta = false`) yields a healthy guest instead of a `degraded` system with a failed mount unit
 - DHCP lease and `launchctl print` parsing now tolerate CRLF line endings (stray `\r` no longer breaks hostname matching or leaks into parsed values)
 - Guest IP file is now world-readable (`0644`, was `0600`), so the darwin-module's `ssh darwin-vz-nix` `ProxyCommand` — which runs as whichever unprivileged user invokes `ssh` — can actually read it
-- `start` now scrubs stale `~/.ssh/darwin-vz-nix_known_hosts` entries (for both the console user and the invoking user, e.g. root's nix-daemon) whenever the guest gets a new IP, so a guest reboot that regenerates its non-persistent host key no longer hard-fails `ssh darwin-vz-nix` or distributed builds with "REMOTE HOST IDENTIFICATION HAS CHANGED"
+- `start` now scrubs the stale `darwin-vz-nix` known-hosts entry from `~/.ssh/darwin-vz-nix_known_hosts` (for both the console user and the invoking user, e.g. root's nix-daemon) on every boot, so a changed guest host key no longer hard-fails `ssh darwin-vz-nix` or distributed builds with "REMOTE HOST IDENTIFICATION HAS CHANGED" — the existing IP-keyed scrub only covered the `darwin-vz-nix ssh` subcommand's own known_hosts, since `ssh darwin-vz-nix` connects via a `ProxyCommand`-backed `Host` alias and records its entry under that alias name, not the guest IP
 
 ## [0.1.0] - 2026-03-14
 

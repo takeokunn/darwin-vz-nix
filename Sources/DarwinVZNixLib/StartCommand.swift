@@ -118,7 +118,7 @@ public struct Start: AsyncParsableCommand {
         do {
             let guestIP = try await networkManager.discoverGuestIP(notBefore: vmStartTime)
             try networkManager.writeGuestIP(guestIP)
-            NetworkManager.scrubUserKnownHosts(ip: guestIP)
+            NetworkManager.scrubUserKnownHosts()
             DaemonLogger.vm.info("Guest IP: \(guestIP)")
         } catch {
             DaemonLogger.vm.warning("Could not discover guest IP: \(error.localizedDescription)")

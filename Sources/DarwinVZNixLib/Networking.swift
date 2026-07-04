@@ -377,39 +377,54 @@ struct NetworkManager {
 
     // MARK: - SSH Connection
 
-    /// Remove any stale host-key entry for `ip` from the known_hosts file so a
-    /// rebuilt guest reusing the same NAT IP doesn't hard-fail host-key checking.
-    /// Best-effort: a missing file or ssh-keygen failure is non-fatal.
-    static func scrubKnownHost(ip: String, knownHostsURL: URL) {
-        guard isValidIPv4(ip), FileManager.default.fileExists(atPath: knownHostsURL.path) else {
+    /// Remove any known_hosts entry keyed by `host` (an IP address or a literal
+    /// ssh_config `Host` alias). Best-effort: a missing file or ssh-keygen
+    /// failure is non-fatal.
+    static func removeKnownHostEntry(host: String, knownHostsURL: URL) {
+        guard FileManager.default.fileExists(atPath: knownHostsURL.path) else {
             return
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
-        process.arguments = ["-R", ip, "-f", knownHostsURL.path]
+        process.arguments = ["-R", host, "-f", knownHostsURL.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try? process.run()
         process.waitUntilExit()
     }
 
-    /// Evict stale `darwin-vz-nix_known_hosts` entries for `ip`, for both the
-    /// current process's own user and the logged-in macOS console user.
+    /// Remove any stale host-key entry for `ip` from the known_hosts file so a
+    /// rebuilt guest reusing the same NAT IP doesn't hard-fail host-key checking.
+    static func scrubKnownHost(ip: String, knownHostsURL: URL) {
+        guard isValidIPv4(ip) else {
+            return
+        }
+        removeKnownHostEntry(host: ip, knownHostsURL: knownHostsURL)
+    }
+
+    /// The `Host` alias `nix/host/darwin-module.nix`'s `ssh_config.d` entry
+    /// registers for the guest.
+    private static let sshAlias = "darwin-vz-nix"
+
+    /// Evict stale `darwin-vz-nix_known_hosts` entries for both the current
+    /// process's own user and the logged-in macOS console user.
     ///
-    /// `nix/host/darwin-module.nix`'s `ssh_config.d` entry points plain
-    /// `ssh darwin-vz-nix` (interactive users) and `nix.buildMachines`
-    /// (root's nix-daemon, for distributed builds) at
-    /// `~/.ssh/darwin-vz-nix_known_hosts` — a file `scrubKnownHost` above
-    /// never touches, since that only runs for the `darwin-vz-nix ssh`
-    /// subcommand's own internal known_hosts. Without this, a guest reboot
-    /// that regenerates its (non-persistent) host key hard-fails every SSH
-    /// path outside that one subcommand. Best-effort: a failed lookup or
-    /// missing file is silently skipped.
-    static func scrubUserKnownHosts(ip: String) {
+    /// The darwin-module points plain `ssh darwin-vz-nix` (interactive users)
+    /// and `nix.buildMachines` (root's nix-daemon, for distributed builds) at
+    /// `~/.ssh/darwin-vz-nix_known_hosts`, connecting via the `Host
+    /// darwin-vz-nix` alias through a `ProxyCommand` — so ssh has no
+    /// hostname/IP of its own to resolve and records the entry under the
+    /// literal alias name, not the guest IP. `scrubKnownHost(ip:)` above (used
+    /// by the `darwin-vz-nix ssh` subcommand, which connects directly to the
+    /// IP) can't evict that: it validates its argument as an IPv4 address and
+    /// would reject the alias outright. Without this, a guest whose host key
+    /// changes hard-fails every SSH path outside that one subcommand.
+    /// Best-effort: a failed lookup or missing file is silently skipped.
+    static func scrubUserKnownHosts() {
         let knownHostsSuffix = ".ssh/darwin-vz-nix_known_hosts"
 
-        scrubKnownHost(
-            ip: ip,
+        removeKnownHostEntry(
+            host: sshAlias,
             knownHostsURL: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(knownHostsSuffix)
         )
 
@@ -433,8 +448,8 @@ struct NetworkManager {
             return
         }
 
-        scrubKnownHost(
-            ip: ip,
+        removeKnownHostEntry(
+            host: sshAlias,
             knownHostsURL: URL(fileURLWithPath: consoleHome).appendingPathComponent(knownHostsSuffix)
         )
     }

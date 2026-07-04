@@ -73,6 +73,21 @@ struct NetworkingIntegrationTests {
     }
 
     @Test
+    func removeKnownHostEntryRemovesAliasEntry() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let knownHostsURL = tempDir.appendingPathComponent("known_hosts")
+        let staleEntry = "darwin-vz-nix ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4stale0000000000000000000000000000\n"
+        try staleEntry.write(to: knownHostsURL, atomically: true, encoding: .utf8)
+
+        NetworkManager.removeKnownHostEntry(host: "darwin-vz-nix", knownHostsURL: knownHostsURL)
+
+        let remaining = try String(contentsOf: knownHostsURL, encoding: .utf8)
+        #expect(!remaining.contains("darwin-vz-nix"))
+    }
+
+    @Test
     func scrubKnownHostIgnoresMissingFile() {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
