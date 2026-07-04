@@ -57,7 +57,7 @@ jobs:
           retention-days: 7
 
       - name: Push guest artifacts to Cachix
-        if: env.CACHIX_AUTH_TOKEN_PRESENT == 'true'
+        if: env.CACHIX_AUTH_TOKEN_PRESENT == 'true' && env.CACHIX_CACHE_AVAILABLE == 'true'
         run: |
           cachix push takeokunn-darwin-vz-nix \
             ci-artifacts/runtime/result-kernel \
@@ -209,7 +209,7 @@ jobs:
           subject-path: dist/darwin-vz-nix-aarch64-darwin
 
       - name: Push to Cachix
-        if: env.CACHIX_AUTH_TOKEN_PRESENT == 'true'
+        if: env.CACHIX_AUTH_TOKEN_PRESENT == 'true' && env.CACHIX_CACHE_AVAILABLE == 'true'
         run: cachix push takeokunn-darwin-vz-nix result-darwin
 
       - name: Create GitHub Release

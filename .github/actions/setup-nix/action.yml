@@ -18,19 +18,44 @@ runs:
         # trusted input) and leave accept-flake-config at its safe default (off).
         extra_nix_config: |
           substituters = https://cache.nixos.org https://takeokunn-darwin-vz-nix.cachix.org
-          trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= takeokunn-darwin-vz-nix.cachix.org-1:/JRjcn9UMUbE0DRyJUg7g+gq/e7QSUXxvz+FZprHIH4=
+          trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= takeokunn-darwin-vz-nix.cachix.org-1:eqv/henpzh2D5PjoV9YNCGGQJ4jUHW4oeFoqcooQX3g=
+    # The project cache is an availability optimization, not a correctness
+    # requirement: everything CI needs can be built or fetched from
+    # cache.nixos.org. cachix-action hard-fails the whole job when the cache is
+    # deleted, made private, or Cachix is down (`cachix use` exits 1), so probe
+    # reachability first and skip Cachix integration — with a loud warning —
+    # when the cache cannot be reached. Nix itself treats an unreachable
+    # substituter as a warning, so builds still proceed either way.
+    # CACHIX_CACHE_AVAILABLE also gates the branch/tag-gated `cachix push`
+    # steps in the workflows.
+    - name: Probe Cachix cache availability
+      shell: bash
+      env:
+        CACHIX_AUTH_TOKEN: ${{ inputs.cachix-auth-token }}
+      run: |
+        probe_args=()
+        if [ -n "$CACHIX_AUTH_TOKEN" ]; then
+          probe_args=(-H "Authorization: Bearer $CACHIX_AUTH_TOKEN")
+        fi
+        if curl -fsS --max-time 30 --retry 2 "${probe_args[@]}" \
+            https://takeokunn-darwin-vz-nix.cachix.org/nix-cache-info >/dev/null; then
+          echo "CACHIX_CACHE_AVAILABLE=true" >> "$GITHUB_ENV"
+        else
+          echo "CACHIX_CACHE_AVAILABLE=false" >> "$GITHUB_ENV"
+          echo "::warning::Cachix cache takeokunn-darwin-vz-nix is unreachable (deleted, private without a valid token, or a Cachix outage). Continuing without the project cache; builds fall back to cache.nixos.org and pushes are skipped."
+        fi
     # skipPush on both cachix-action steps: cachix-action otherwise auto-pushes
     # every store path built during the job in its post-step whenever an authToken
     # is present. Same-repo (non-fork) PRs DO receive secrets, so that would
     # publish derivations built from unreviewed PR code into the production cache.
     # Publishing happens only via the explicit, branch/tag-gated `cachix push` steps.
     - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
-      if: inputs.cachix-auth-token == ''
+      if: env.CACHIX_CACHE_AVAILABLE == 'true' && inputs.cachix-auth-token == ''
       with:
         name: takeokunn-darwin-vz-nix
         skipPush: true
     - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
-      if: inputs.cachix-auth-token != ''
+      if: env.CACHIX_CACHE_AVAILABLE == 'true' && inputs.cachix-auth-token != ''
       with:
         name: takeokunn-darwin-vz-nix
         authToken: "${{ inputs.cachix-auth-token }}"
