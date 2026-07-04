@@ -25,6 +25,16 @@
     # (deploy-rs, distributed builds) — which run as `builder`, not via the root
     # daemon — can write to the multi-user /nix/store overlay.
     extraGroups = [ "nixbld" ];
+    # Each `nix.buildMachines` connection is its own short-lived SSH login, and
+    # without lingering, systemd-logind tears down `user@<uid>.service` (with
+    # SIGKILL) the instant the LAST session for "builder" ends — including any
+    # *other*, still-active session's `nix-daemon --stdio`, not just the one
+    # that logged out. Observed live: every remote build died immediately with
+    # "unexpected Nix daemon error: error: interrupted by the user" on the
+    # guest, surfaced to the host as "Nix daemon disconnected unexpectedly".
+    # Lingering keeps the user's systemd instance running independent of login
+    # sessions, which is exactly what a headless build user needs.
+    linger = true;
   };
   users.groups.builder = { };
 
