@@ -41,6 +41,20 @@ struct NetworkingIntegrationTests {
         }
     }
 
+    @Test
+    func writeGuestIPIsWorldReadable() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let manager = NetworkManager(stateDirectory: tempDir)
+        try manager.writeGuestIP("192.168.64.2")
+
+        let guestIPFileURL = VMConfig.guestIPFileURL(for: tempDir)
+        let attrs = try FileManager.default.attributesOfItem(atPath: guestIPFileURL.path)
+        let posix = attrs[.posixPermissions] as? Int
+        #expect(posix == Int(0o644))
+    }
+
     // MARK: - SSH Key Generation
 
     @Test

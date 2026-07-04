@@ -365,9 +365,12 @@ struct NetworkManager {
         )
         let guestIPFileURL = VMConfig.guestIPFileURL(for: stateDirectory)
         try ip.write(to: guestIPFileURL, atomically: true, encoding: .utf8)
-        // 0o600: the guest IP is local state; no reason for it to be world-readable.
+        // 0o644: the darwin-module ProxyCommand (`ssh darwin-vz-nix`) reads this
+        // file as whichever unprivileged user runs ssh, not as the root/launchd
+        // daemon that writes it. It only ever holds a validated IPv4 string, so
+        // world-readable is safe — unlike the SSH private key, which stays 0600.
         try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
+            [.posixPermissions: 0o644],
             ofItemAtPath: guestIPFileURL.path
         )
     }
