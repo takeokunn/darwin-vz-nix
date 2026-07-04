@@ -200,8 +200,18 @@ in
       '';
     };
 
-    # Ensure working directory exists with traversable permissions
-    system.activationScripts.darwin-vz-nix = {
+    # Ensure working directory exists with traversable permissions.
+    #
+    # nix-darwin only ever runs the fixed set of activationScripts names it
+    # hardcodes into system.activationScripts.script.text (see
+    # modules/system/activation-scripts.nix upstream); `types.attrsOf
+    # (types.submodule ...)` accepts any attribute name without error, but an
+    # arbitrary one like the previous `darwin-vz-nix` key is silently never
+    # invoked. `postActivation` is one of the names nix-darwin actually
+    # stitches in (after launchd/homebrew), and `text`'s `types.lines` type
+    # concatenates every module's contribution, so this composes safely with
+    # any other module also appending to `postActivation`.
+    system.activationScripts.postActivation = {
       text = ''
         WORKING_DIRECTORY=${workingDirectoryShell}
         mkdir -p "$WORKING_DIRECTORY"

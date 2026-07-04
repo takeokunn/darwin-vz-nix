@@ -582,7 +582,15 @@
                 sshConfig = testSystem.config.environment.etc."ssh/ssh_config.d/200-darwin-vz-nix.conf".text;
                 escapedSshConfig =
                   escapedPathSystem.config.environment.etc."ssh/ssh_config.d/200-darwin-vz-nix.conf".text;
-                activationScript = testSystem.config.system.activationScripts.darwin-vz-nix.text;
+                activationScript = testSystem.config.system.activationScripts.postActivation.text;
+                # nix-darwin only stitches a fixed, hardcoded set of activationScripts
+                # names into system.activationScripts.script.text (the script it
+                # actually runs); types.attrsOf (types.submodule ...) accepts any other
+                # attribute name without error, but silently never invokes it. Check
+                # the fully-wired script directly, not just the intermediate attribute
+                # our module happens to write to, so picking an unwired name again
+                # fails this check instead of silently doing nothing at runtime.
+                wiredActivationScript = builtins.unsafeDiscardStringContext testSystem.config.system.activationScripts.script.text;
                 customGuestHostName = customGuest.config.networking.hostName;
                 customGuestMarker = customGuest.config.environment.etc."darwin-vz-custom-marker".text;
                 customGuestAllowedUsers = customGuest.config.nix.settings.allowed-users;
@@ -616,6 +624,7 @@
             jq -e '.activationScript | contains("ssh-keygen -y -f")' "$config_json" >/dev/null
             jq -e '.activationScript | contains("id_ed25519.pub.tmp")' "$config_json" >/dev/null
             jq -e '.activationScript | contains("chmod 600 \"$SSH_WORK_DIR/id_ed25519\"")' "$config_json" >/dev/null
+            jq -e '.wiredActivationScript | contains("id_ed25519.pub.tmp")' "$config_json" >/dev/null
             jq -e '.customGuestHostName == "darwin-vz-guest"' "$config_json" >/dev/null
             jq -e '.customGuestMarker == "ok"' "$config_json" >/dev/null
             jq -e '.customGuestAllowedUsers == ["builder"]' "$config_json" >/dev/null
