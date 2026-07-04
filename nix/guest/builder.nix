@@ -21,20 +21,29 @@
     isNormalUser = true;
     group = "builder";
     home = "/home/builder";
-    # In the `nixbld` group so that builds driven over `ssh-ng://builder@guest`
-    # (deploy-rs, distributed builds) — which run as `builder`, not via the root
-    # daemon — can write to the multi-user /nix/store overlay.
-    extraGroups = [ "nixbld" ];
-    # Each `nix.buildMachines` connection is its own short-lived SSH login, and
-    # without lingering, systemd-logind tears down `user@<uid>.service` (with
-    # SIGKILL) the instant the LAST session for "builder" ends — including any
-    # *other*, still-active session's `nix-daemon --stdio`, not just the one
-    # that logged out. Observed live: every remote build died immediately with
-    # "unexpected Nix daemon error: error: interrupted by the user" on the
-    # guest, surfaced to the host as "Nix daemon disconnected unexpectedly".
-    # Lingering keeps the user's systemd instance running independent of login
-    # sessions, which is exactly what a headless build user needs.
-    linger = true;
+    # CRITICAL: `builder` must NOT be a member of the `nixbld` build-users group.
+    #
+    # When the nix-daemon starts a build it allocates a build user from
+    # `build-users-group` (nixbld) and, to guarantee a clean slate, calls
+    # `killUser(uid)` on it — which does `kill(-1, SIGKILL)` *as that uid*,
+    # killing every process the build user owns. Those users (nixbld1..32) are
+    # dedicated and own nothing else, so that is safe. But if `builder` is in
+    # the nixbld group, nix can pick `builder` (uid 1000) itself as the build
+    # user, and `killUser(1000)` then SIGKILLs the entire `builder` login
+    # session — `systemd --user`, the sshd session, and the very
+    # `nix-daemon --stdio` serving the remote build. The host sees the build
+    # abort with "Nix daemon disconnected unexpectedly (maybe it crashed?)".
+    # This made EVERY `nix.buildMachines` distributed build fail (root-caused
+    # live via a `signal:signal_generate` bpftrace: killer was `nix-daemon`
+    # running as uid 1000 issuing a session-wide kill).
+    #
+    # `builder` does not need nixbld membership: it is a `trusted-user`, so the
+    # nix-daemon accepts its build requests and runs them under the dedicated
+    # nixbld1..32 users; the store is written by the (root) daemon, not by
+    # `builder` directly. Leaving `builder` out of nixbld also makes its
+    # `store = auto` resolve to the daemon socket instead of a direct local
+    # store, so `nix-daemon --stdio` correctly proxies builds to the root
+    # daemon (system.slice) instead of executing them inside the login session.
   };
   users.groups.builder = { };
 
