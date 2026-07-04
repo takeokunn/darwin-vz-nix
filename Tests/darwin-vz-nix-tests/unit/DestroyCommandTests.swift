@@ -86,4 +86,28 @@ struct DestroyCommandTests {
             ) == false
         )
     }
+
+    /// `destroy` must remove EVERY state artifact, including the Nix GC-root
+    /// directory (which pins the guest kernel/initrd/system store paths) and the
+    /// public-key VirtioFS share. Leaving `gcroots/` behind keeps store paths
+    /// un-collectable forever, defeating the purpose of destroy.
+    @Test
+    func destroyRemovesGCRootsAndPublicShare() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        let gcroots = stateDirectory.appendingPathComponent("gcroots", isDirectory: true)
+        let sshPub = stateDirectory.appendingPathComponent("ssh-pub", isDirectory: true)
+        try FileManager.default.createDirectory(at: gcroots, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sshPub, withIntermediateDirectories: true)
+        try Data("root".utf8).write(to: gcroots.appendingPathComponent("kernel"))
+        try Data("ssh-ed25519 AAAA builder@darwin-vz-nix".utf8)
+            .write(to: sshPub.appendingPathComponent("id_ed25519.pub"))
+
+        var cmd = try Destroy.parse(["--yes", "--state-dir", stateDirectory.path])
+        try await cmd.run()
+
+        #expect(FileManager.default.fileExists(atPath: gcroots.path) == false)
+        #expect(FileManager.default.fileExists(atPath: sshPub.path) == false)
+    }
 }

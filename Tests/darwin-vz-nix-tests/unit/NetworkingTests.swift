@@ -46,6 +46,18 @@ struct NetworkingTests {
         #expect(ip == nil)
     }
 
+    // MARK: - parseLeaseContent CRLF robustness
+
+    /// A CRLF-terminated lease file must still parse: the per-line trim strips the
+    /// trailing \r so `name==hostname` matches and the ip_address has no \r. Guards
+    /// the whitespacesAndNewlines fix (\r is absent from CharacterSet.whitespaces).
+    @Test
+    func parseLeaseContentHandlesCRLF() {
+        let crlf = sampleLease.replacingOccurrences(of: "\n", with: "\r\n")
+        let ip = NetworkManager.parseLeaseContent(crlf, hostname: "darwin-vz-guest", notBefore: 0)
+        #expect(ip == "192.168.64.2")
+    }
+
     // MARK: - parseLeaseContent notBefore filter
 
     @Test

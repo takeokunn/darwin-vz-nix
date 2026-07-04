@@ -64,13 +64,20 @@ public struct Destroy: AsyncParsableCommand {
             }
         }
 
-        // Delete all known state files and directories
+        // Delete all known state files and directories. This must cover every
+        // artifact any subcommand can create, or `destroy` leaves state behind:
+        //   - gcroots/  holds Nix GC roots (nix-store --add-root symlinks) that
+        //     pin the guest kernel/initrd/system store paths. Leaving them keeps
+        //     those paths un-collectable forever, defeating the point of destroy.
+        //   - ssh-pub/  is the public-key-only VirtioFS share directory.
         let itemsToDelete: [URL] = [
             stateDirectory.appendingPathComponent("disk.img"),
             stateDirectory.appendingPathComponent("vm.pid"),
             stateDirectory.appendingPathComponent("console.log"),
             stateDirectory.appendingPathComponent("guest-ip"),
             stateDirectory.appendingPathComponent("ssh", isDirectory: true),
+            stateDirectory.appendingPathComponent("ssh-pub", isDirectory: true),
+            stateDirectory.appendingPathComponent("gcroots", isDirectory: true),
         ]
 
         for url in itemsToDelete {
@@ -79,6 +86,16 @@ public struct Destroy: AsyncParsableCommand {
             } catch CocoaError.fileNoSuchFile {
                 // Item does not exist; nothing to delete
             }
+        }
+
+        // The docs promise `destroy` removes the entire state directory. Remove
+        // it too — but ONLY if now empty, so a `--state-dir` that (mis)points at a
+        // shared directory can never take unrelated files down with it. A leftover
+        // non-darwin-vz-nix file leaves the directory in place, by design.
+        if let remaining = try? FileManager.default.contentsOfDirectory(atPath: stateDirectory.path),
+           remaining.isEmpty
+        {
+            try? FileManager.default.removeItem(at: stateDirectory)
         }
 
         print("VM state destroyed.")

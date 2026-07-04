@@ -212,7 +212,11 @@ struct NetworkManager {
             var leaseTimestamp: UInt64 = 0
 
             for line in lines {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                // Trim newlines too, not just spaces: a CRLF-terminated lease file
+                // would otherwise leave a trailing \r on every value (\r is absent
+                // from CharacterSet.whitespaces), breaking the exact `name==hostname`
+                // match and poisoning the parsed ip_address.
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.hasPrefix("name=") {
                     name = String(trimmed.dropFirst("name=".count))
                 } else if trimmed.hasPrefix("ip_address=") {

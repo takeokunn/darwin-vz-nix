@@ -57,7 +57,9 @@ enum DoctorChecks {
         var state: String?
         var lastExitCode: String?
         for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // whitespacesAndNewlines (not whitespaces) so a trailing \r on CRLF
+            // input doesn't leak into the parsed state/exit-code values.
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasPrefix("state = ") {
                 state = String(trimmed.dropFirst("state = ".count))
             } else if trimmed.hasPrefix("last exit code = ") {
@@ -98,6 +100,27 @@ enum DoctorChecks {
         guard let count else { return .skipped }
         if count > 0 { return .warning }
         return .ok
+    }
+
+    // MARK: - bootpd log filtering
+
+    /// Extract meaningful log lines from `log show --style compact` output.
+    ///
+    /// The compact style ALWAYS emits a column header
+    /// ("Timestamp               Ty Process[PID:TID]") — even when zero entries
+    /// match the predicate. Without dropping it, the doctor reports that header as
+    /// if it were a real bootpd log line and the "No bootpd log entries" message
+    /// becomes unreachable. Real entries start with an ISO timestamp, never the
+    /// literal word "Timestamp", so this filter is precise.
+    static func extractBootpdLogLines(_ output: String) -> [String] {
+        output
+            .components(separatedBy: "\n")
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { return false }
+                if trimmed.hasPrefix("Timestamp"), trimmed.contains("Process[PID:TID]") { return false }
+                return true
+            }
     }
 
     // MARK: - Report formatting

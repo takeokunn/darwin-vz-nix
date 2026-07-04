@@ -64,6 +64,34 @@ struct DoctorChecksTests {
         #expect(DoctorChecks.trimFirewallAppOutput("   \n\t  \n") == "")
     }
 
+    // MARK: - extractBootpdLogLines
+
+    @Test
+    func bootpdLogHeaderOnlyYieldsNoLines() {
+        // `log show --style compact` always prints this header, even with zero
+        // matching entries. It must not be reported as a log line.
+        let output = "Timestamp               Ty Process[PID:TID]\n"
+        #expect(DoctorChecks.extractBootpdLogLines(output).isEmpty)
+    }
+
+    @Test
+    func bootpdLogHeaderStrippedRealEntriesKept() {
+        let output = """
+        Timestamp               Ty Process[PID:TID]
+        2026-07-04 13:37:00.123456+0900 I  bootpd[123:456] service enabled
+        2026-07-04 13:37:01.234567+0900 I  bootpd[123:456] DHCP OFFER
+        """
+        let lines = DoctorChecks.extractBootpdLogLines(output)
+        #expect(lines.count == 2)
+        #expect(lines.allSatisfy { $0.contains("bootpd") })
+    }
+
+    @Test
+    func bootpdLogEmptyOutputYieldsNoLines() {
+        #expect(DoctorChecks.extractBootpdLogLines("").isEmpty)
+        #expect(DoctorChecks.extractBootpdLogLines("\n\n  \n").isEmpty)
+    }
+
     // MARK: - parseLaunchctlPrint
 
     @Test

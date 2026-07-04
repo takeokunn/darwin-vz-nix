@@ -251,9 +251,7 @@ public struct Doctor: AsyncParsableCommand {
                 detail: ["`log show` exited with non-zero status"]
             )
         }
-        let lines = stdout
-            .components(separatedBy: "\n")
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let lines = DoctorChecks.extractBootpdLogLines(stdout)
         let tail = Array(lines.suffix(5))
         if tail.isEmpty {
             return DoctorCheckResult(

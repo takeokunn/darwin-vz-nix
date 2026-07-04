@@ -24,3 +24,16 @@ public func exitOperational(_ message: String) throws -> Never {
     FileHandle.standardError.write(Data("Error: \(message)\n".utf8))
     throw ExitCode(ExitStatus.operational)
 }
+
+/// Print a user-facing error to stderr and exit with the usage status (64).
+///
+/// Use this for *invalid configuration* — bad `--cores`/`--memory`/`--disk-size`
+/// values, or missing kernel/initrd/system artifacts — so the exit code matches
+/// the documented `EX_USAGE` contract. This keeps semantic validation failures
+/// consistent with ArgumentParser's own parse errors (which also exit 64),
+/// instead of collapsing them into the generic failure code (1).
+/// Returning `Never` lets call sites treat it as a terminating statement.
+public func exitUsage(_ message: String) throws -> Never {
+    FileHandle.standardError.write(Data("Error: \(message)\n".utf8))
+    throw ExitCode(ExitStatus.usage)
+}

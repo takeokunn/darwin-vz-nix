@@ -70,7 +70,15 @@ public struct Start: AsyncParsableCommand {
 
         try Self.cleanupRuntimeFilesBeforeStart(config: config)
 
-        try config.validate()
+        // Invalid configuration (bad cores/memory/disk-size, missing artifacts)
+        // is a usage error (64, EX_USAGE) per the documented exit-code contract,
+        // not a generic failure (1). Map VMConfigError accordingly so scripts and
+        // CI see the same code as ArgumentParser's own parse errors.
+        do {
+            try config.validate()
+        } catch let error as VMConfigError {
+            try exitUsage(error.errorDescription ?? "Invalid VM configuration.")
+        }
         try config.ensureStateDirectory()
 
         let networkManager = NetworkManager(stateDirectory: config.stateDirectory)

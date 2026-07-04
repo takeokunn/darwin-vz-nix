@@ -80,6 +80,43 @@ struct StartCommandTests {
         #expect(FileManager.default.fileExists(atPath: pidFile.path))
     }
 
+    /// Invalid numeric configuration (cores < 1) is a usage error: exit 64
+    /// (EX_USAGE), matching ArgumentParser's own parse-error code — not the
+    /// generic failure code 1. `run()` throws before booting anything.
+    @Test
+    func invalidCoreCountExitsWithUsageStatus() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        var cmd = try Start.parse([
+            "--kernel", "/nonexistent/Image",
+            "--initrd", "/nonexistent/initrd",
+            "--cores", "0",
+            "--state-dir", stateDirectory.path,
+        ])
+        await #expect(throws: ExitCode(ExitStatus.usage)) {
+            try await cmd.run()
+        }
+    }
+
+    /// A missing kernel/initrd artifact is likewise invalid configuration: exit
+    /// 64, not 1. Guards the exit-code contract for the most common first-run
+    /// failure (artifacts not built yet).
+    @Test
+    func missingArtifactsExitWithUsageStatus() async throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        var cmd = try Start.parse([
+            "--kernel", "/nonexistent/Image",
+            "--initrd", "/nonexistent/initrd",
+            "--state-dir", stateDirectory.path,
+        ])
+        await #expect(throws: ExitCode(ExitStatus.usage)) {
+            try await cmd.run()
+        }
+    }
+
     private func makeConfig(stateDirectory: URL) throws -> VMConfig {
         let kernel = stateDirectory.appendingPathComponent("Image")
         let initrd = stateDirectory.appendingPathComponent("initrd")

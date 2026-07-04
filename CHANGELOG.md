@@ -67,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale PID handling now records process identity, refuses to signal a reused PID owned by another executable, and lets `destroy` continue state cleanup after removing the stale PID file
 - Process liveness checks now treat `EPERM` from `kill(pid, 0)` as a running process
 - Stale zero-byte `/nix/store` lock files are now reported by `doctor` instead of being deleted automatically before VM start
+- `destroy` now also removes the `gcroots/` (Nix GC roots pinning the guest closure) and `ssh-pub/` directories, and deletes the state directory itself when empty — previously it leaked those, keeping the guest kernel/initrd/system store paths un-collectable forever
+- Invalid configuration (`--cores 0`, bad `--disk-size`, missing kernel/initrd/system) now exits `64` (`EX_USAGE`), matching the documented exit-code contract and ArgumentParser's own parse errors, instead of the generic failure code `1`
+- `doctor` no longer reports the `log show --style compact` column header as a bootpd log entry; with no recent entries it now correctly prints "No bootpd log entries in last 5 minutes."
+- Guest `/run/rosetta` mount is now `nofail`, so `start --no-rosetta` (or the darwin module with `rosetta = false`) yields a healthy guest instead of a `degraded` system with a failed mount unit
+- DHCP lease and `launchctl print` parsing now tolerate CRLF line endings (stray `\r` no longer breaks hostname matching or leaks into parsed values)
 
 ## [0.1.0] - 2026-03-14
 

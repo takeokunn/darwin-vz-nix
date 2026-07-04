@@ -227,6 +227,7 @@ State lives at `~/.local/share/darwin-vz-nix/` for direct CLI use, or
 | `guest-ip` | Discovered guest IP; consumed by `ssh` and the module's `ProxyCommand` |
 | `vm.pid` | `VMProcessRecord` JSON: pid, executable path, state dir, start time |
 | `console.log` | Serial console capture (also tee'd to stderr under `--verbose`) |
+| `gcroots/` | Nix GC roots pinning the guest kernel/initrd/system store paths while the VM runs (prevents the host GC from collecting them out from under the guest) |
 
 `disk.img` is the only large/persistent artifact. `vm.pid`, `guest-ip`, and
 `console.log` are runtime files cleaned up on stop and re-created on start;
