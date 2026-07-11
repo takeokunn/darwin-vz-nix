@@ -68,4 +68,49 @@ struct IdleMonitorTests {
         let lastActivity = now.addingTimeInterval(-1000 * 60)
         #expect(!IdleMonitor.shouldShutdown(lastActivity: lastActivity, now: now, timeoutMinutes: 0))
     }
+
+    // MARK: - classify (pure lsof-output parsing)
+
+    @Test
+    func classifyDetectsEstablishedConnection() {
+        let output = """
+        COMMAND   PID  USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME
+        ssh     12345 take    3u   IPv4 0x1234      0t0  TCP 192.168.64.1:52344->192.168.64.5:22 (ESTABLISHED)
+        """
+        #expect(IdleMonitor.classify(lsofOutput: output) == .active)
+    }
+
+    @Test
+    func classifyTreatsNoEstablishedAsIdle() {
+        // Header only / a lone LISTEN or CLOSE_WAIT line — no live connection.
+        let output = """
+        COMMAND   PID  USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME
+        sshd    999 root     4u   IPv4 0x9999      0t0  TCP 192.168.64.5:22 (LISTEN)
+        """
+        #expect(IdleMonitor.classify(lsofOutput: output) == .idle)
+    }
+
+    @Test
+    func classifyEmptyOutputIsIdle() {
+        #expect(IdleMonitor.classify(lsofOutput: "") == .idle)
+    }
+
+    // MARK: - shouldCountAsActivity (fail-safe mapping)
+
+    @Test
+    func activeProbeCountsAsActivity() {
+        #expect(IdleMonitor.shouldCountAsActivity(.active))
+    }
+
+    @Test
+    func idleProbeDoesNotCountAsActivity() {
+        #expect(!IdleMonitor.shouldCountAsActivity(.idle))
+    }
+
+    @Test
+    func unknownProbeFailsSafeAsActivity() {
+        // A probe that could not observe the guest (invalid IP, lsof failed to
+        // run under load) must never let the VM be judged idle mid-build.
+        #expect(IdleMonitor.shouldCountAsActivity(.unknown))
+    }
 }
