@@ -779,7 +779,13 @@
               touch $out
             '';
         github-actions =
-          pkgs.runCommand "check-github-actions" { nativeBuildInputs = [ pkgs.actionlint pkgs.perl ]; }
+          pkgs.runCommand "check-github-actions"
+            {
+              nativeBuildInputs = [
+                pkgs.actionlint
+                pkgs.perl
+              ];
+            }
             ''
               cd ${./.}
               actionlint -color=false .github/workflows/*.yml
