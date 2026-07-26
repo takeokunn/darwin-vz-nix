@@ -7,5 +7,5 @@
 /// Keep this string in sync with the repository `VERSION` file (a flake check
 /// enforces it).
 public enum BuildInfo {
-    public static let version = "0.2.0"
+    public static let version = "0.2.1"
 }

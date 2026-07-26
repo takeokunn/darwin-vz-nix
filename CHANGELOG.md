@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-26
+
+### Changed
+- Refreshed pinned GitHub Actions revisions to their current reviewed releases while retaining immutable commit-SHA pinning
+- Benchmark workload diagnostics are written to private per-iteration files and the public JSON result records only bounded failure summaries, preventing guest command output from leaking into publishable results
+
+### Fixed
+- Benchmark setup failures now stop the run immediately instead of emitting misleading near-zero timing samples
+- Guest IP discovery now checks every unexpired DHCP lease for the VM's expected MAC address, probes SSH to populate the ARP table when necessary, and validates an exact MAC match before accepting an address
+- Benchmark iterations now wait for the VM state lock to be released before starting the next sample, preventing teardown races and false `vm.lock` failures
+- Remote benchmark workloads are passed to the guest shell as one safely quoted command, preserving arguments and shell metacharacters instead of truncating multi-word commands
+
 ## [0.2.0] - 2026-07-26
 
 ### Added
@@ -122,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Nix DB mounted on tmpfs to prevent stale derivation errors
 - Stale lock file cleanup in `/nix/store` before VM start
 
-[Unreleased]: https://github.com/takeokunn/darwin-vz-nix/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/takeokunn/darwin-vz-nix/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/takeokunn/darwin-vz-nix/releases/tag/v0.2.1
 [0.2.0]: https://github.com/takeokunn/darwin-vz-nix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/takeokunn/darwin-vz-nix/releases/tag/v0.1.0
