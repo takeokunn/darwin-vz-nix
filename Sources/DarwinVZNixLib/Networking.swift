@@ -31,6 +31,12 @@ enum NetworkError: LocalizedError {
 }
 
 struct NetworkManager {
+    struct LeaseCandidate: Equatable {
+        let ip: String
+        let expiration: UInt64
+        let sourceOrder: Int
+    }
+
     let stateDirectory: URL
 
     var sshKeyPath: URL {
@@ -203,7 +209,7 @@ struct NetworkManager {
         var consecutiveLeaseMisses = 0
         var pollMilliseconds = 500
         var cachedLeaseModification: Date?
-        var cachedLeaseIP: String?
+        var cachedLeaseCandidates: [LeaseCandidate] = []
 
         while Date() < deadline {
             if let attributes = try? FileManager.default.attributesOfItem(atPath: leaseFile),
@@ -212,18 +218,29 @@ struct NetworkManager {
                modification != cachedLeaseModification
             {
                 cachedLeaseModification = modification
-                cachedLeaseIP = parseLeaseFile(
-                    path: leaseFile,
-                    hostname: hostname,
-                    unexpiredAt: UInt64(Date().timeIntervalSince1970)
-                )
+                if let content = try? String(contentsOfFile: leaseFile, encoding: .utf8) {
+                    cachedLeaseCandidates = Self.parseLeaseCandidates(
+                        content,
+                        hostname: hostname,
+                        unexpiredAt: UInt64(Date().timeIntervalSince1970)
+                    )
+                }
             }
 
-            // One ARP snapshot is shared by both paths for this iteration.
+            if let leaseCandidate = Self.selectVerifiedLeaseCandidate(
+                cachedLeaseCandidates,
+                expectedMAC: mac,
+                probe: { Self.isTCPPortOpen(ip: $0, port: 22) },
+                verifyARP: { Self.verifyIPViaARP(ip: $0, expectedMAC: $1) }
+            ) {
+                return leaseCandidate
+            }
+
+            // Keep the whole-table sweep as a fallback for guests whose lease
+            // was not written, while still requiring a live SSH endpoint.
             let arpIP = Self.readARPTable().flatMap { Self.scanARPTableForMAC($0, expectedMAC: mac) }
-            let leaseCandidate = cachedLeaseIP.flatMap { $0 == arpIP ? $0 : nil }
             let fallbackCandidate = consecutiveLeaseMisses >= 2 ? arpIP : nil
-            if let ip = leaseCandidate ?? fallbackCandidate,
+            if let ip = fallbackCandidate,
                Self.isValidIPv4(ip),
                Self.isTCPPortOpen(ip: ip, port: 22)
             { return ip }
@@ -241,11 +258,16 @@ struct NetworkManager {
     /// Parse macOS DHCP lease content for a matching hostname.
     /// This is separated from file I/O to enable unit testing.
     static func parseLeaseContent(_ content: String, hostname: String, unexpiredAt: UInt64) -> String? {
-        var newestTimestamp: UInt64 = 0
-        var newestIP: String?
+        parseLeaseCandidates(content, hostname: hostname, unexpiredAt: unexpiredAt).first?.ip
+    }
+
+    /// Return every valid matching lease, newest first. Source order breaks
+    /// equal-expiration ties deterministically in favor of the later entry.
+    static func parseLeaseCandidates(_ content: String, hostname: String, unexpiredAt: UInt64) -> [LeaseCandidate] {
+        var candidates: [LeaseCandidate] = []
 
         let blocks = content.components(separatedBy: "}")
-        for block in blocks {
+        for (sourceOrder, block) in blocks.enumerated() {
             let lines = block.components(separatedBy: "\n")
             var name: String?
             var ipAddress: String?
@@ -268,14 +290,34 @@ struct NetworkManager {
             }
 
             if name == hostname, let ip = ipAddress,
-               leaseTimestamp > unexpiredAt, leaseTimestamp >= newestTimestamp
+               isValidIPv4(ip), leaseTimestamp > unexpiredAt
             {
-                newestTimestamp = leaseTimestamp
-                newestIP = ip
+                candidates.append(LeaseCandidate(ip: ip, expiration: leaseTimestamp, sourceOrder: sourceOrder))
             }
         }
 
-        return newestIP
+        return candidates.sorted {
+            if $0.expiration != $1.expiration { return $0.expiration > $1.expiration }
+            if $0.sourceOrder != $1.sourceOrder { return $0.sourceOrder > $1.sourceOrder }
+            return $0.ip < $1.ip
+        }
+    }
+
+    /// Probe first to actively populate the host ARP cache, then accept only a
+    /// candidate whose targeted ARP entry matches this VM's deterministic MAC.
+    static func selectVerifiedLeaseCandidate(
+        _ candidates: [LeaseCandidate],
+        expectedMAC: String,
+        probe: (String) -> Bool,
+        verifyARP: (String, String) -> Bool
+    ) -> String? {
+        for candidate in candidates where isValidIPv4(candidate.ip) {
+            guard probe(candidate.ip) else { continue }
+            if verifyARP(candidate.ip, expectedMAC) {
+                return candidate.ip
+            }
+        }
+        return nil
     }
 
     // MARK: - ARP Verification

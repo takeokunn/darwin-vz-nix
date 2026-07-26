@@ -81,6 +81,62 @@ struct NetworkingTests {
     }
 
     @Test
+    func parseLeaseCandidatesReturnsAllMatchingUnexpiredLeasesDeterministically() {
+        let candidates = NetworkManager.parseLeaseCandidates(
+            multipleLeases,
+            hostname: "darwin-vz-guest",
+            unexpiredAt: 0
+        )
+
+        #expect(candidates.map(\.ip) == ["192.168.64.3", "192.168.64.2"])
+    }
+
+    @Test
+    func verifiedLeaseCandidateProbesThenSelectsExpectedMAC() {
+        let candidates = NetworkManager.parseLeaseCandidates(
+            multipleLeases,
+            hostname: "darwin-vz-guest",
+            unexpiredAt: 0
+        )
+        var events: [String] = []
+
+        let selected = NetworkManager.selectVerifiedLeaseCandidate(
+            candidates,
+            expectedMAC: "02:da:72:56:00:01",
+            probe: { ip in
+                events.append("probe:\(ip)")
+                return true
+            },
+            verifyARP: { ip, mac in
+                events.append("arp:\(ip):\(mac)")
+                return ip == "192.168.64.2"
+            }
+        )
+
+        #expect(selected == "192.168.64.2")
+        #expect(events == [
+            "probe:192.168.64.3",
+            "arp:192.168.64.3:02:da:72:56:00:01",
+            "probe:192.168.64.2",
+            "arp:192.168.64.2:02:da:72:56:00:01",
+        ])
+    }
+
+    @Test
+    func verifiedLeaseCandidateRejectsARPMismatch() {
+        let candidates = [NetworkManager.LeaseCandidate(ip: "192.168.64.2", expiration: 1, sourceOrder: 0)]
+
+        let selected = NetworkManager.selectVerifiedLeaseCandidate(
+            candidates,
+            expectedMAC: "02:da:72:56:00:01",
+            probe: { _ in true },
+            verifyARP: { _, _ in false }
+        )
+
+        #expect(selected == nil)
+    }
+
+    @Test
     func parseLeaseContentMixedHosts() {
         let mixedLeases = """
         {
