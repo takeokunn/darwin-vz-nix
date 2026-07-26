@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-26
+
 ### Added
 - `doctor --json` for machine-readable diagnostics, and a documented exit-code contract (0 success, 1 unexpected, 3 VM-not-running/operational, 64 usage)
 - Per-state-directory MAC address derivation so multiple VMs no longer collide on the shared NAT segment during DHCP/ARP discovery (one VM per state directory)
@@ -35,12 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CHANGELOG.md for version history tracking
 - CONTRIBUTING.md and SECURITY.md for project maintenance and vulnerability reporting
 - Self-hosted Apple Silicon `VM Smoke Test` workflow for end-to-end VM boot and SSH verification
-- A dormant release-time VM smoke gate: when the repo variable `ENABLE_VM_SMOKE_GATE` is set to `true` (after a self-hosted Apple Silicon runner is registered), a tag release boots the guest VM and verifies SSH before publishing; default-off so current releases are unaffected.
+- A mandatory release-time VM smoke gate boots the guest VM on a self-hosted Apple Silicon runner and verifies SSH before publishing; failed runs upload only sanitized diagnostics, never the VM state directory.
 - GitHub Issue and Pull Request templates for bug reports, support questions, and review readiness
 
 ### Changed
 - VirtioFS now shares **only** the SSH public key into the (untrusted) guest: the host materializes a dedicated `ssh-pub/` directory containing just `id_ed25519.pub`, and a guard refuses to build the share if any non-`.pub` file is present, so the private key can never leak to the guest
-- The guest builder account is no longer in the `wheel` group; remote Nix builds run through the nix-daemon, which already trusts it as a `trusted-user`. It is granted passwordless sudo so `deploy-rs` can activate a system generation as root over SSH, but the builds themselves need no sudo
+- The guest builder account is no longer in the `wheel` group and has no sudo access; remote Nix builds run through the root nix-daemon, which trusts it as a `trusted-user`
 - Guest IP discovery is more robust: discovered addresses are validated as well-formed IPv4, the ARP-sweep fallback is gated behind repeated lease misses plus a TCP/22 liveness probe (so a stale ARP entry can't yield a dead IP), and polling backs off instead of spawning a subprocess every 500ms
 - `start` scrubs any stale host key for the freshly discovered guest IP from the state-directory `known_hosts` once per boot, so a rebuilt VM that reuses a NAT address no longer hard-fails host-key verification — while `ssh` connections within a boot keep verifying against the pinned key (scrubbing per connection would have reduced `accept-new` to accepting any key on every connect)
 - Missing kernel/initrd errors now print copy-pasteable `nix run .#build-guest-artifacts` guidance, and `start --help` includes a worked first-run example
@@ -56,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - nix-darwin activation now quotes the configured working directory in shell commands
 - `build-guest-artifacts` now validates expected output paths and explains cache misses or missing Linux builders on Darwin
 - `build-guest-artifacts` can materialize result links from an imported Nix store closure manifest for Linux-to-macOS CI handoff
-- Release workflow now verifies that version tags match the Nix package version before publishing assets
+- Release workflow now requires the version tag commit to equal the current `origin/main` tip, verifies the tag against the Nix package version, and publishes and attests the guest closure manifest and compressed NAR alongside the Darwin binary
 
 ### Fixed
 - **Idle monitor no longer kills a busy VM mid-build**: the activity probe now fails safe — if it cannot observe the guest (guest IP not yet known, or `lsof` fails to launch, which is common while the host is saturated by a large `ssh-ng` build), the sample counts as *activity* instead of idle, so an unobservable VM is never judged idle and shut down. The probe also matches any ESTABLISHED TCP connection to the guest (previously only port 22), so `ssh-ng` distributed builds and deploy-rs are reliably counted. The `lsof` parse and the fail-safe mapping are now pure, unit-tested functions
@@ -120,5 +122,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Nix DB mounted on tmpfs to prevent stale derivation errors
 - Stale lock file cleanup in `/nix/store` before VM start
 
-[Unreleased]: https://github.com/takeokunn/darwin-vz-nix/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/takeokunn/darwin-vz-nix/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/takeokunn/darwin-vz-nix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/takeokunn/darwin-vz-nix/releases/tag/v0.1.0

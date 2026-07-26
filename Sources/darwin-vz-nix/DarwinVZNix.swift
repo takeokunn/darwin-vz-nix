@@ -7,6 +7,6 @@ struct DarwinVZNix: AsyncParsableCommand {
         commandName: "darwin-vz-nix",
         abstract: "Manage NixOS Linux VMs using macOS Virtualization.framework",
         version: BuildInfo.version,
-        subcommands: [Start.self, Stop.self, Status.self, SSH.self, Destroy.self, Doctor.self]
+        subcommands: [Start.self, Stop.self, Status.self, SSH.self, Destroy.self, Doctor.self, PrepareHost.self]
     )
 }

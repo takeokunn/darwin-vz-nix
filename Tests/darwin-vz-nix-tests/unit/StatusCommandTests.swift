@@ -95,9 +95,35 @@ struct StatusCommandTests {
         try "999999".write(to: pidFile, atomically: true, encoding: .utf8)
         try "192.0.2.10".write(to: guestIPFile, atomically: true, encoding: .utf8)
 
-        Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+        Status.cleanupStoppedRuntimeFiles(
+            in: stateDirectory,
+            observedGeneration: Status.pidFileGeneration(at: pidFile)
+        )
 
         #expect(!FileManager.default.fileExists(atPath: pidFile.path))
         #expect(!FileManager.default.fileExists(atPath: guestIPFile.path))
+    }
+
+    @Test
+    func cleanupDoesNotDeleteReplacementGeneration() throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+        let pidFile = stateDirectory.appendingPathComponent("vm.pid")
+        let guestIPFile = stateDirectory.appendingPathComponent("guest-ip")
+        try "999999".write(to: pidFile, atomically: true, encoding: .utf8)
+        let observed = try #require(Status.pidFileGeneration(at: pidFile))
+
+        let cleaned = Status.cleanupStoppedRuntimeFiles(
+            in: stateDirectory,
+            observedGeneration: observed
+        ) {
+            try? FileManager.default.removeItem(at: pidFile)
+            try? "888888".write(to: pidFile, atomically: true, encoding: .utf8)
+            try? "192.0.2.20".write(to: guestIPFile, atomically: true, encoding: .utf8)
+        }
+
+        #expect(!cleaned)
+        #expect(try String(contentsOf: pidFile, encoding: .utf8) == "888888")
+        #expect(try String(contentsOf: guestIPFile, encoding: .utf8) == "192.0.2.20")
     }
 }

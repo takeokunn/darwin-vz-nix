@@ -126,7 +126,15 @@
                         local key="$1"
                         {
                           nix config show 2>/dev/null || nix show-config 2>/dev/null
-                        } | sed -n "s/^$key = //p" | head -n 1
+                        } | perl -e '
+                          my $key = shift;
+                          my $prefix = "$key = ";
+                          while (<STDIN>) {
+                            next unless index($_, $prefix) == 0;
+                            print substr($_, length($prefix));
+                            last;
+                          }
+                        ' "$key"
                       }
 
                       host_system() {
@@ -169,26 +177,25 @@
                       }
 
                       print_required_builds() {
-                        awk '
-                          /derivation(s)? will be built:/ {
-                            printing = 1
-                            count = 0
-                            print
-                            next
+                        perl -ne '
+                          if (/derivation(s)? will be built:/) {
+                            $printing = 1;
+                            $count = 0;
+                            print;
+                            next;
                           }
-                          printing && /path(s)? will be fetched/ {
-                            printing = 0
-                            next
+                          if ($printing && /path(s)? will be fetched/) {
+                            $printing = 0;
+                            next;
                           }
-                          printing && count < 25 {
-                            print
-                            count++
-                            next
+                          if ($printing && $count < 25) {
+                            print;
+                            $count++;
+                            next;
                           }
-                          printing && count == 25 {
-                            print "  ..."
-                            count++
-                            next
+                          if ($printing && $count == 25) {
+                            print "  ...\\n";
+                            $count++;
                           }
                         '
                       }
@@ -563,6 +570,18 @@
                 }
               ];
             };
+            relativePathSystem = nix-darwin.lib.darwinSystem {
+              inherit system;
+              modules = [
+                self.darwinModules.default
+                {
+                  services.darwin-vz = {
+                    enable = true;
+                    workingDirectory = "relative/state";
+                  };
+                }
+              ];
+            };
             evaluatedConfig = builtins.toFile "darwin-module-evaluated.json" (
               builtins.toJSON {
                 buildMachineCount = builtins.length testSystem.config.nix.buildMachines;
@@ -572,6 +591,7 @@
                 launchdArgumentCount = builtins.length testSystem.config.launchd.daemons.darwin-vz-nix.serviceConfig.ProgramArguments;
                 launchdWorkingDirectory =
                   testSystem.config.launchd.daemons.darwin-vz-nix.serviceConfig.WorkingDirectory;
+                launchdKeepAlive = testSystem.config.launchd.daemons.darwin-vz-nix.serviceConfig.KeepAlive;
                 launchdStdout = testSystem.config.launchd.daemons.darwin-vz-nix.serviceConfig.StandardOutPath;
                 newsyslogConfig = testSystem.config.environment.etc."newsyslog.d/darwin-vz-nix.conf".text;
                 escapedPathHasNewsyslog =
@@ -582,7 +602,11 @@
                 sshConfig = testSystem.config.environment.etc."ssh/ssh_config.d/200-darwin-vz-nix.conf".text;
                 escapedSshConfig =
                   escapedPathSystem.config.environment.etc."ssh/ssh_config.d/200-darwin-vz-nix.conf".text;
-                activationScript = testSystem.config.system.activationScripts.postActivation.text;
+                activationScript = builtins.unsafeDiscardStringContext testSystem.config.system.activationScripts.preActivation.text;
+                relativePathAssertion = builtins.any (
+                  assertion:
+                  !assertion.assertion && lib.hasInfix "workingDirectory must be absolute" assertion.message
+                ) relativePathSystem.config.assertions;
                 # nix-darwin only stitches a fixed, hardcoded set of activationScripts
                 # names into system.activationScripts.script.text (the script it
                 # actually runs); types.attrsOf (types.submodule ...) accepts any other
@@ -604,44 +628,64 @@
               }
             );
           in
-          pkgs.runCommand "check-darwin-module" { nativeBuildInputs = [ pkgs.jq ]; } ''
-            config_json=${evaluatedConfig}
+          pkgs.runCommand "check-darwin-module"
+            {
+              nativeBuildInputs = [
+                pkgs.jq
+                pkgs.perl
+              ];
+            }
+            ''
+              config_json=${evaluatedConfig}
 
-            jq -e '.buildMachineCount == 1' "$config_json" >/dev/null
-            jq -e '.buildMachine.hostName == "darwin-vz-nix"' "$config_json" >/dev/null
-            jq -e '.buildMachine.sshUser == "builder"' "$config_json" >/dev/null
-            jq -e '.buildMachine.systems == ["aarch64-linux", "x86_64-linux"]' "$config_json" >/dev/null
-            jq -e '.buildersUseSubstitutes == true' "$config_json" >/dev/null
-            jq -e '.distributedBuilds == true' "$config_json" >/dev/null
-            jq -e '.launchdArgumentCount == 1' "$config_json" >/dev/null
-            jq -e '.launchdWorkingDirectory == "/var/lib/darwin-vz-nix"' "$config_json" >/dev/null
-            jq -e '.launchdStdout == "/var/lib/darwin-vz-nix/daemon.log"' "$config_json" >/dev/null
-            jq -e '.newsyslogConfig | contains("/var/lib/darwin-vz-nix/daemon.log")' "$config_json" >/dev/null
-            jq -e '.newsyslogConfig | contains("/var/lib/darwin-vz-nix/console.log")' "$config_json" >/dev/null
-            jq -e '.escapedPathHasNewsyslog == false' "$config_json" >/dev/null
-            jq -e '.kernelPath | endswith("/Image")' "$config_json" >/dev/null
-            jq -e '.initrdPath | endswith("/initrd")' "$config_json" >/dev/null
-            jq -e '.systemPath | test("/nix/store/.*nixos-system-darwin-vz-guest")' "$config_json" >/dev/null
-            jq -e '.sshConfig | contains("Host darwin-vz-nix")' "$config_json" >/dev/null
-            jq -e '.sshConfig | contains("ProxyCommand /bin/sh")' "$config_json" >/dev/null
-            jq -e '.sshConfig | contains("cat -- \"$1\"")' "$config_json" >/dev/null
-            jq -e '.sshConfig | contains(" sh /var/lib/darwin-vz-nix/guest-ip")' "$config_json" >/dev/null
-            jq -e --arg expected "sh '/var/lib/darwin vz-nix/guest-ip'" '.escapedSshConfig | contains($expected)' "$config_json" >/dev/null
-            jq -e '.activationScript | contains("ssh-keygen -y -f")' "$config_json" >/dev/null
-            jq -e '.activationScript | contains("id_ed25519.pub.tmp")' "$config_json" >/dev/null
-            jq -e '.activationScript | contains("chmod 600 \"$SSH_WORK_DIR/id_ed25519\"")' "$config_json" >/dev/null
-            jq -e '.wiredActivationScript | contains("id_ed25519.pub.tmp")' "$config_json" >/dev/null
-            jq -e '.customGuestHostName == "darwin-vz-guest"' "$config_json" >/dev/null
-            jq -e '.customGuestMarker == "ok"' "$config_json" >/dev/null
-            jq -e '.customGuestAllowedUsers == ["builder"]' "$config_json" >/dev/null
-            jq -e '.builderExtraGroups | index("nixbld") | not' "$config_json" >/dev/null
-            jq -e '.builderPrimaryGroup != "nixbld"' "$config_json" >/dev/null
-            jq -e '.nixbldGroupMembers | index("builder") | not' "$config_json" >/dev/null
-            jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/store")' "$config_json" >/dev/null
-            jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/work")' "$config_json" >/dev/null
+              jq -e '.buildMachineCount == 1' "$config_json" >/dev/null
+              jq -e '.buildMachine.hostName == "darwin-vz-nix"' "$config_json" >/dev/null
+              jq -e '.buildMachine.sshUser == "builder"' "$config_json" >/dev/null
+              jq -e '.buildMachine.systems == ["aarch64-linux", "x86_64-linux"]' "$config_json" >/dev/null
+              jq -e '.buildersUseSubstitutes == true' "$config_json" >/dev/null
+              jq -e '.distributedBuilds == true' "$config_json" >/dev/null
+              jq -e '.launchdArgumentCount == 1' "$config_json" >/dev/null
+              jq -e '.launchdWorkingDirectory == "/var/lib/darwin-vz-nix"' "$config_json" >/dev/null
+              jq -e '.launchdKeepAlive.SuccessfulExit == false' "$config_json" >/dev/null
+              jq -e '.launchdStdout == "/var/lib/darwin-vz-nix/daemon.log"' "$config_json" >/dev/null
+              jq -e '.newsyslogConfig | contains("/var/lib/darwin-vz-nix/daemon.log")' "$config_json" >/dev/null
+              jq -e '.newsyslogConfig | contains("/var/lib/darwin-vz-nix/console.log")' "$config_json" >/dev/null
+              jq -e '.escapedPathHasNewsyslog == false' "$config_json" >/dev/null
+              jq -e '.kernelPath | endswith("/Image")' "$config_json" >/dev/null
+              jq -e '.initrdPath | endswith("/initrd")' "$config_json" >/dev/null
+              jq -e '.systemPath | test("/nix/store/.*nixos-system-darwin-vz-guest")' "$config_json" >/dev/null
+              jq -e '.sshConfig | contains("Host darwin-vz-nix")' "$config_json" >/dev/null
+              jq -e '.sshConfig | contains("ProxyCommand /bin/sh")' "$config_json" >/dev/null
+              jq -e '.sshConfig | contains("cat -- \"$ip_file\"")' "$config_json" >/dev/null
+              jq -e '.sshConfig | contains("[ \"$#\" -eq 4 ]")' "$config_json" >/dev/null
+              jq -e '.sshConfig | contains("case \"$octet\" in 0|[1-9]|[1-9][0-9]*)")' "$config_json" >/dev/null
+              jq -e '.sshConfig | contains("-le 255")' "$config_json" >/dev/null
+              jq -e '.sshConfig | contains(" sh /var/lib/darwin-vz-nix/guest-ip")' "$config_json" >/dev/null
+              jq -e --arg expected "sh '/var/lib/darwin vz-nix/guest-ip'" '.escapedSshConfig | contains($expected)' "$config_json" >/dev/null
+              proxy_script=$(jq -r '.sshConfig' "$config_json" | perl -ne 'if (m{ProxyCommand /bin/sh -c \x27(.*)\x27 sh }) { print $1; exit }')
+              test -n "$proxy_script"
+              printf %s 01.2.3.4 > guest-ip
+              if /bin/sh -c "$proxy_script" sh "$PWD/guest-ip" 2>/dev/null; then
+                echo "ProxyCommand accepted non-canonical IPv4 address 01.2.3.4" >&2
+                exit 1
+              fi
+              jq -e '.activationScript | contains("darwin-vz-nix prepare-host")' "$config_json" >/dev/null
+              jq -e '.activationScript | contains("--console-user \"$CONSOLE_USER\"")' "$config_json" >/dev/null
+              jq -e '.wiredActivationScript | contains("darwin-vz-nix prepare-host")' "$config_json" >/dev/null
+              jq -e '.activationScript | contains("/usr/bin/awk") | not' "$config_json" >/dev/null
+              jq -e '.activationScript | test("mkdir|chmod|chown|install|touch") | not' "$config_json" >/dev/null
+              jq -e '.relativePathAssertion == true' "$config_json" >/dev/null
+              jq -e '.customGuestHostName == "darwin-vz-guest"' "$config_json" >/dev/null
+              jq -e '.customGuestMarker == "ok"' "$config_json" >/dev/null
+              jq -e '.customGuestAllowedUsers == ["builder"]' "$config_json" >/dev/null
+              jq -e '.builderExtraGroups | index("nixbld") | not' "$config_json" >/dev/null
+              jq -e '.builderPrimaryGroup != "nixbld"' "$config_json" >/dev/null
+              jq -e '.nixbldGroupMembers | index("builder") | not' "$config_json" >/dev/null
+              jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/store")' "$config_json" >/dev/null
+              jq -e '.initrdPrepareNixVarScript | contains("/sysroot/nix/.rw-store/work")' "$config_json" >/dev/null
 
-            touch $out
-          '';
+              touch $out
+            '';
         build-guest-artifacts-script =
           pkgs.runCommand "check-build-guest-artifacts-script"
             {
@@ -712,9 +756,16 @@
               grep -F "darwin-vz-nix\" start" "$script" >/dev/null
               grep -F "darwin-vz-nix\" ssh" "$script" >/dev/null
               grep -F "darwin-vz-nix\" stop" "$script" >/dev/null
+              grep -F 'darwin-vz-nix" stop --state-dir "$STATE_DIR" --force >/dev/null 2>&1 || true' "$script" >/dev/null
+              grep -F 'darwin-vz-nix" stop --state-dir "$STATE_DIR"' "$script" >/dev/null
+              grep -F "VM shut down gracefully" "$script" >/dev/null
               grep -F "Smoke test passed" "$script" >/dev/null
               grep -F "STATE_DIR_OWNED=1" "$script" >/dev/null
               grep -F "DARWIN_VZ_NIX_SMOKE_TMPDIR" "$script" >/dev/null
+              grep -F 'DEFAULT_TMP_ROOT="$HOME/Library/Caches/darwin-vz-nix"' "$script" >/dev/null
+              grep -F 'DEFAULT_TMP_BASE="$DEFAULT_TMP_ROOT/smoke"' "$script" >/dev/null
+              grep -F 'chmod 700 "$DEFAULT_TMP_ROOT" "$TMP_BASE"' "$script" >/dev/null
+              ! grep -F 'TMPDIR:-/tmp' "$script" >/dev/null
               grep -F "DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS" "$script" >/dev/null
               grep -F "artifact_links_ready" "$script" >/dev/null
               grep -F 'test -x "$OUTPUT_DIR/result-guest-artifacts/system/init"' "$script" >/dev/null
@@ -764,13 +815,20 @@
               grep -F 'DARWIN_VZ_NIX_SMOKE_STATE_DIR: ''${{ github.workspace }}/ci-artifacts/smoke-state' .github/workflows/vm-smoke.yml >/dev/null
               grep -F 'DARWIN_VZ_NIX_SMOKE_KEEP_STATE: "1"' .github/workflows/vm-smoke.yml >/dev/null
               grep -F "DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS: never" .github/workflows/vm-smoke.yml >/dev/null
-              grep -F "Upload VM smoke logs" .github/workflows/vm-smoke.yml >/dev/null
-              grep -F "vm-smoke-logs" .github/workflows/vm-smoke.yml >/dev/null
+              grep -F "Prepare sanitized VM smoke diagnostics" .github/workflows/vm-smoke.yml >/dev/null
+              grep -F "Upload sanitized VM smoke diagnostics" .github/workflows/vm-smoke.yml >/dev/null
+              grep -F "path: ci-artifacts/smoke-diagnostics" .github/workflows/vm-smoke.yml >/dev/null
+              ! grep -F "path: ci-artifacts/smoke-state" .github/workflows/vm-smoke.yml >/dev/null
               grep -F "nix run .#build-guest-artifacts" .github/workflows/vm-smoke.yml >/dev/null
               grep -F "nix run .#smoke-test" .github/workflows/vm-smoke.yml >/dev/null
               grep -F "nix run .#smoke-test" .github/workflows/release.yml >/dev/null
-              grep -F "ENABLE_VM_SMOKE_GATE" .github/workflows/release.yml >/dev/null
-              grep -F "needs.smoke-gate.result == 'skipped'" .github/workflows/release.yml >/dev/null
+              grep -F "needs.smoke-gate.result == 'success'" .github/workflows/release.yml >/dev/null
+              grep -F "Prepare sanitized VM smoke diagnostics" .github/workflows/release.yml >/dev/null
+              grep -F "Upload sanitized VM smoke diagnostics" .github/workflows/release.yml >/dev/null
+              grep -F "path: ci-artifacts/smoke-diagnostics" .github/workflows/release.yml >/dev/null
+              ! grep -F "ENABLE_VM_SMOKE_GATE" .github/workflows/release.yml >/dev/null
+              ! grep -F "needs.smoke-gate.result == 'skipped'" .github/workflows/release.yml >/dev/null
+              ! grep -F "path: ci-artifacts/smoke-state" .github/workflows/release.yml >/dev/null
               # The release smoke-gate duplicates vm-smoke.yml's smoke step; guard
               # the env block against drift between the two files.
               grep -F 'DARWIN_VZ_NIX_ARTIFACT_DIR: ''${{ github.workspace }}/ci-artifacts/runtime' .github/workflows/release.yml >/dev/null
@@ -784,6 +842,11 @@
               grep -F 'expected_tag="v''${package_version}"' .github/workflows/release.yml >/dev/null
               grep -F "dist/darwin-vz-nix-aarch64-darwin" .github/workflows/release.yml >/dev/null
               grep -F "shasum -a 256 darwin-vz-nix-aarch64-darwin" .github/workflows/release.yml >/dev/null
+              grep -F "Download guest artifact closure for release" .github/workflows/release.yml >/dev/null
+              grep -F "dist/guest-artifacts.closure" .github/workflows/release.yml >/dev/null
+              grep -F "dist/guest-artifacts.nar.zst" .github/workflows/release.yml >/dev/null
+              grep -F "subject-path: dist/*" .github/workflows/release.yml >/dev/null
+              grep -F "Verify release commit is current main tip" .github/workflows/release.yml >/dev/null
               touch $out
             '';
         swift-dependencies =
@@ -831,6 +894,16 @@
         '';
         swift-test = darwinVzNix.overrideAttrs (_: {
           name = "darwin-vz-nix-test";
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./Package.swift
+              ./Package.resolved
+              ./VERSION
+              (lib.fileset.fileFilter (file: file.type == "regular" && file.hasExt "swift") ./Sources)
+              (lib.fileset.fileFilter (file: file.type == "regular" && file.hasExt "swift") ./Tests)
+            ];
+          };
           buildPhase = ''
             runHook preBuild
 
@@ -899,8 +972,26 @@
             OUTPUT_DIR=''${DARWIN_VZ_NIX_ARTIFACT_DIR:-$PWD}
             OUTPUT_DIR=$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)
             STATE_DIR=''${DARWIN_VZ_NIX_SMOKE_STATE_DIR:-}
-            TMP_BASE=''${DARWIN_VZ_NIX_SMOKE_TMPDIR:-''${TMPDIR:-/tmp}}
+            DEFAULT_TMP_BASE=
+            DEFAULT_TMP_ROOT=
+            if [ -n "''${DARWIN_VZ_NIX_SMOKE_TMPDIR:-}" ]; then
+              TMP_BASE=$DARWIN_VZ_NIX_SMOKE_TMPDIR
+            elif [ -n "''${TMPDIR:-}" ]; then
+              TMP_BASE=$TMPDIR
+            else
+              if [ -z "''${HOME:-}" ]; then
+                echo "HOME must be set when DARWIN_VZ_NIX_SMOKE_TMPDIR and TMPDIR are unset" >&2
+                exit 2
+              fi
+              DEFAULT_TMP_ROOT="$HOME/Library/Caches/darwin-vz-nix"
+              DEFAULT_TMP_BASE="$DEFAULT_TMP_ROOT/smoke"
+              TMP_BASE=$DEFAULT_TMP_BASE
+            fi
+            umask 077
             TMP_BASE=$(mkdir -p "$TMP_BASE" && cd "$TMP_BASE" && pwd)
+            if [ -n "$DEFAULT_TMP_BASE" ]; then
+              chmod 700 "$DEFAULT_TMP_ROOT" "$TMP_BASE"
+            fi
             TMP_BASE=''${TMP_BASE%/}
             STATE_DIR_PREFIX="$TMP_BASE/darwin-vz-nix-smoke."
             SMOKE_TIMEOUT=''${DARWIN_VZ_NIX_SMOKE_TIMEOUT:-180}
@@ -1080,10 +1171,11 @@
 
               if [ -s "$STATE_DIR/guest-ip" ]; then
                 if "${darwinVzNix}/bin/darwin-vz-nix" ssh --state-dir "$STATE_DIR" -- true; then
-                  echo "Smoke test passed: VM booted, SSH accepted a command, and shutdown was requested."
-                  "${darwinVzNix}/bin/darwin-vz-nix" stop --state-dir "$STATE_DIR" --force
-                  wait "$start_pid" || true
+                  echo "SSH check passed; requesting graceful VM shutdown."
+                  "${darwinVzNix}/bin/darwin-vz-nix" stop --state-dir "$STATE_DIR"
+                  wait "$start_pid"
                   start_pid=""
+                  echo "Smoke test passed: VM booted, SSH accepted a command, and the VM shut down gracefully."
                   exit 0
                 fi
               fi

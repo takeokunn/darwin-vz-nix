@@ -27,6 +27,7 @@ final class IdleMonitor {
     /// One-shot guard: ensures the shutdown callback fires at most once and that
     /// the timer is cancelled before we hand off to the shutdown coordinator.
     private var shutdownRequested = false
+    private var consecutiveIdleSamples = 0
 
     /// Outcome of a single activity probe.
     ///
@@ -51,20 +52,39 @@ final class IdleMonitor {
     }
 
     func start() {
+        queue.async { [weak self] in
+            self?.scheduleNextCheck(after: 30)
+        }
+    }
+
+    private func scheduleNextCheck(after interval: TimeInterval) {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 30, repeating: 30)
+        timer.schedule(deadline: .now() + interval)
         timer.setEventHandler { [weak self] in
             guard let self, !shutdownRequested else { return }
-            if Self.shouldCountAsActivity(probeActivity()) {
+            let probe = probeActivity()
+            if Self.shouldCountAsActivity(probe) {
                 lastActivityTime = Date()
+                consecutiveIdleSamples = 0
+            } else {
+                consecutiveIdleSamples += 1
             }
-            if Self.shouldShutdown(lastActivity: lastActivityTime, now: Date(), timeoutMinutes: timeoutMinutes) {
+            let now = Date()
+            if Self.shouldShutdown(lastActivity: lastActivityTime, now: now, timeoutMinutes: timeoutMinutes) {
                 shutdownRequested = true
                 idleCheckTimer?.cancel()
                 idleCheckTimer = nil
                 onIdleShutdown()
+            } else {
+                let remaining = Double(timeoutMinutes) * 60 - now.timeIntervalSince(lastActivityTime)
+                scheduleNextCheck(after: Self.nextPollInterval(
+                    probe: probe,
+                    consecutiveIdleSamples: consecutiveIdleSamples,
+                    remainingIdleTime: remaining
+                ))
             }
         }
+        idleCheckTimer?.cancel()
         idleCheckTimer = timer
         timer.resume()
     }
@@ -105,6 +125,24 @@ final class IdleMonitor {
         lsofOutput.contains("ESTABLISHED") ? .active : .idle
     }
 
+    static func classify(terminationStatus: Int32, timedOut: Bool) -> ActivityProbe {
+        guard !timedOut else { return .unknown }
+        switch terminationStatus {
+        case 0: return .active
+        case 1: return .idle
+        default: return .unknown
+        }
+    }
+
+    static func nextPollInterval(
+        probe: ActivityProbe,
+        consecutiveIdleSamples: Int,
+        remainingIdleTime: TimeInterval
+    ) -> TimeInterval {
+        let adaptiveInterval: TimeInterval = probe == .idle && consecutiveIdleSamples >= 1 ? 60 : 30
+        return max(1, min(adaptiveInterval, remainingIdleTime))
+    }
+
     /// Probes for any ESTABLISHED TCP connection to the guest. Returns
     /// `.unknown` on any inability to observe (invalid IP, `lsof` launch
     /// failure) so the caller can fail safe.
@@ -124,13 +162,10 @@ final class IdleMonitor {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
-        // Match any host↔guest TCP connection (no port filter): SSH on 22,
-        // `ssh-ng` distributed builds, deploy-rs, and nix-daemon streams all
-        // count. Filtering to `:22` previously missed connections whenever the
-        // build path did not surface as a steady port-22 socket to the probe.
-        process.arguments = ["-i", "@\(guestIP)", "-n", "-P"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
+        // Let lsof filter TCP state itself. With `-t`, status 0 means at least
+        // one matching PID and status 1 means no established connection.
+        process.arguments = ["-n", "-P", "-t", "-iTCP@\(guestIP)", "-sTCP:ESTABLISHED"]
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
 
         do {
@@ -140,14 +175,22 @@ final class IdleMonitor {
             // saturated by a large build): unobservable, not idle.
             return .unknown
         }
-        // Drain the pipe BEFORE waiting: lsof output grows with the number of
-        // matching connections, and waitUntilExit() with an unread pipe
-        // deadlocks once it exceeds the 64 KB pipe buffer — which would wedge
-        // the idle monitor (and idle shutdown) permanently.
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let output = String(data: data, encoding: .utf8) ?? ""
-
-        return Self.classify(lsofOutput: output)
+        let deadline = Date().addingTimeInterval(2)
+        while process.isRunning, Date() < deadline {
+            usleep(20000)
+        }
+        if process.isRunning {
+            process.terminate()
+            let terminationDeadline = Date().addingTimeInterval(0.25)
+            while process.isRunning, Date() < terminationDeadline {
+                usleep(20000)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            return Self.classify(terminationStatus: -1, timedOut: true)
+        }
+        return Self.classify(terminationStatus: process.terminationStatus, timedOut: false)
     }
 }

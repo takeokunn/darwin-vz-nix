@@ -19,21 +19,65 @@ struct VMManagerTests {
 
     @Test
     func readPIDJSON() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let url = directory.appendingPathComponent("vm.pid")
         let record = VMProcessRecord(
             pid: 12345,
             executablePath: "/nix/store/example/bin/darwin-vz-nix",
-            stateDirectory: "/var/lib/darwin-vz-nix",
+            stateDirectory: directory.path,
             startedAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(record)
-        let url = TestHelpers.createTempFile(content: String(decoding: data, as: UTF8.self))
-        defer { TestHelpers.removeTempItem(at: url) }
+        try data.write(to: url)
 
         let decoded = try #require(VMManager.readPIDRecord(from: url))
         #expect(decoded == record)
         #expect(VMManager.readPID(from: url) == 12345)
+    }
+
+    @Test
+    func readPIDJSONDefaultsMissingLaunchdManagedToFalse() throws {
+        let url = TestHelpers.createTempFile(content: "")
+        defer { TestHelpers.removeTempItem(at: url) }
+        let record = VMProcessRecord(
+            pid: 12345,
+            executablePath: "/nix/store/example/bin/darwin-vz-nix",
+            stateDirectory: url.deletingLastPathComponent().path,
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(record)) as? [String: Any]
+        )
+        object.removeValue(forKey: "launchdManaged")
+        try String(decoding: JSONSerialization.data(withJSONObject: object), as: UTF8.self).write(
+            to: url,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let decoded = try #require(VMManager.readPIDRecord(from: url))
+        #expect(decoded.launchdManaged == false)
+    }
+
+    @Test
+    func readPIDJSONPreservesLaunchdManaged() throws {
+        let url = TestHelpers.createTempFile(content: "")
+        defer { TestHelpers.removeTempItem(at: url) }
+        let record = VMProcessRecord(
+            pid: 12345,
+            executablePath: "/nix/store/example/bin/darwin-vz-nix",
+            stateDirectory: url.deletingLastPathComponent().path,
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            launchdManaged: true
+        )
+        try write(record, to: url)
+
+        #expect(try #require(VMManager.readPIDRecord(from: url)).launchdManaged)
     }
 
     @Test
@@ -239,18 +283,18 @@ struct VMManagerTests {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        try "\(process.processIdentifier)".write(to: pidFile, atomically: true, encoding: .utf8)
+        try writeRecord(for: process, stateDirectory: tempDir, to: pidFile)
 
         defer {
             if process.isRunning { process.terminate() }
         }
 
-        let stopped = try VMManager.terminateProcess(
+        let termination = try VMManager.terminateProcess(
             pid: process.processIdentifier,
-            pidFileURL: pidFile,
-            expectedExecutablePath: "/bin/sleep"
+            pidFileURL: pidFile
         )
-        #expect(stopped == true)
+        #expect(termination.stopped == true)
+        #expect(termination.usedSIGKILL == false)
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
         #expect(VMManager.isProcessRunning(pid: process.processIdentifier) == false)
     }
@@ -267,37 +311,18 @@ struct VMManagerTests {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        try "\(process.processIdentifier)".write(to: pidFile, atomically: true, encoding: .utf8)
+        try writeRecord(for: process, stateDirectory: tempDir, to: pidFile)
 
         defer {
             if process.isRunning { process.terminate() }
         }
 
-        let stopped = try VMManager.terminateProcess(
-            pid: process.processIdentifier, pidFileURL: pidFile, force: true,
-            expectedExecutablePath: "/bin/sleep"
+        let termination = try VMManager.terminateProcess(
+            pid: process.processIdentifier, pidFileURL: pidFile, force: true
         )
-        #expect(stopped == true)
+        #expect(termination.stopped == true)
+        #expect(termination.usedSIGKILL == true)
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
-    }
-
-    /// Legacy PID file (no recorded executable path): a recycled PID belonging to
-    /// an unrelated process must NOT be treated as our VM (T2.8 hardening).
-    @Test
-    func processMatchesRecordRejectsLegacyPidForeignProcess() throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        process.arguments = ["120"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        defer { if process.isRunning { process.terminate() } }
-
-        // No expected path => legacy file. /bin/sleep is not darwin-vz-nix.
-        #expect(VMManager.processMatchesRecord(
-            pid: process.processIdentifier,
-            expectedExecutablePath: nil
-        ) == false)
     }
 
     @Test
@@ -312,7 +337,14 @@ struct VMManagerTests {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        try "\(process.processIdentifier)".write(to: pidFile, atomically: true, encoding: .utf8)
+        let record = VMProcessRecord(
+            pid: process.processIdentifier,
+            executablePath: "/definitely/not/bin/darwin-vz-nix",
+            stateDirectory: tempDir.path,
+            startedAt: Date(),
+            processStartTimeMicroseconds: VMManager.processStartTimeMicroseconds(for: process.processIdentifier)
+        )
+        try write(record, to: pidFile)
 
         defer {
             if process.isRunning { process.terminate() }
@@ -321,8 +353,7 @@ struct VMManagerTests {
         #expect(throws: VMManagerError.self) {
             _ = try VMManager.terminateProcess(
                 pid: process.processIdentifier,
-                pidFileURL: pidFile,
-                expectedExecutablePath: "/definitely/not/bin/darwin-vz-nix"
+                pidFileURL: pidFile
             )
         }
         #expect(process.isRunning == true)
@@ -330,32 +361,33 @@ struct VMManagerTests {
     }
 
     @Test
-    func terminateNonExistentPID() throws {
+    func terminateNonExistentPIDForceDoesNotReportSIGKILL() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
         let pidFile = tempDir.appendingPathComponent("vm.pid")
         try "99999".write(to: pidFile, atomically: true, encoding: .utf8)
 
         // PID 99999 is extremely unlikely to exist on a test host.
-        // kill(99999, SIGTERM) returns ESRCH, which should be treated as already stopped.
-        let stopped = try VMManager.terminateProcess(pid: 99999, pidFileURL: pidFile)
-        #expect(stopped == true)
+        // A force request must not report SIGKILL when no signal was actually sent.
+        let termination = try VMManager.terminateProcess(
+            pid: 99999,
+            pidFileURL: pidFile,
+            force: true
+        )
+        #expect(termination.stopped == true)
+        #expect(termination.usedSIGKILL == false)
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
     }
 
     @Test
-    func terminateNonExistentPIDWithExpectedExecutable() throws {
+    func terminateNonExistentPIDFromLegacyFile() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
         let pidFile = tempDir.appendingPathComponent("vm.pid")
         try "99999".write(to: pidFile, atomically: true, encoding: .utf8)
 
-        let stopped = try VMManager.terminateProcess(
-            pid: 99999,
-            pidFileURL: pidFile,
-            expectedExecutablePath: "/definitely/not/bin/darwin-vz-nix"
-        )
-        #expect(stopped == true)
+        let termination = try VMManager.terminateProcess(pid: 99999, pidFileURL: pidFile)
+        #expect(termination.stopped == true)
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
     }
 
@@ -371,6 +403,74 @@ struct VMManagerTests {
         }
         #expect(FileManager.default.fileExists(atPath: pidFile.path) == false)
     }
+
+    @Test
+    func readPIDRecordRejectsSameProcessFromDifferentStateDirectory() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["120"]
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+
+        let record = VMProcessRecord(
+            pid: process.processIdentifier,
+            executablePath: VMManager.executablePath(for: process.processIdentifier),
+            stateDirectory: directory.appendingPathComponent("other").path,
+            startedAt: Date(),
+            processStartTimeMicroseconds: VMManager.processStartTimeMicroseconds(for: process.processIdentifier)
+        )
+        let pidFile = directory.appendingPathComponent("vm.pid")
+        try write(record, to: pidFile)
+        #expect(VMManager.readPIDRecord(from: pidFile) == nil)
+        #expect(!VMManager.processMatchesRecord(record, pidFileURL: pidFile))
+    }
+
+    @Test
+    func processMatchRejectsReusedPIDStartIdentity() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["120"]
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+
+        let actualStart = try #require(VMManager.processStartTimeMicroseconds(for: process.processIdentifier))
+        let record = VMProcessRecord(
+            pid: process.processIdentifier,
+            executablePath: "/bin/sleep",
+            stateDirectory: directory.path,
+            startedAt: Date(),
+            processStartTimeMicroseconds: actualStart + 1
+        )
+        let pidFile = directory.appendingPathComponent("vm.pid")
+        try write(record, to: pidFile)
+
+        #expect(!VMManager.processMatchesRecord(record, pidFileURL: pidFile))
+        #expect(throws: VMManagerError.self) {
+            _ = try VMManager.terminateProcess(pid: record.pid, pidFileURL: pidFile)
+        }
+        #expect(process.isRunning)
+    }
+
+    private func writeRecord(for process: Process, stateDirectory: URL, to pidFile: URL) throws {
+        let record = VMProcessRecord(
+            pid: process.processIdentifier,
+            executablePath: VMManager.executablePath(for: process.processIdentifier),
+            stateDirectory: VMManager.canonicalPath(stateDirectory),
+            startedAt: Date(),
+            processStartTimeMicroseconds: VMManager.processStartTimeMicroseconds(for: process.processIdentifier)
+        )
+        try write(record, to: pidFile)
+    }
+
+    private func write(_ record: VMProcessRecord, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(record).write(to: url)
+    }
 }
 
 extension VMManagerTests {
@@ -379,5 +479,138 @@ extension VMManagerTests {
         #expect(VMManager.enclosingStorePath(of: URL(fileURLWithPath: "/nix/store/abc123-guest-artifacts/system")) == "/nix/store/abc123-guest-artifacts")
         #expect(VMManager.enclosingStorePath(of: URL(fileURLWithPath: "/nix/store/abc123-guest-artifacts")) == "/nix/store/abc123-guest-artifacts")
         #expect(VMManager.enclosingStorePath(of: URL(fileURLWithPath: "/tmp/not-store")) == nil)
+    }
+
+    @Test
+    func gcRootWarmStartSkipsNixStore() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let storePath = directory.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: storePath, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("kernel"),
+            withDestinationURL: storePath
+        )
+        try VMManager.ensureGCRoot(
+            named: "kernel", storePath: storePath.path, in: directory,
+            executableURL: URL(fileURLWithPath: "/definitely/missing")
+        )
+    }
+
+    @Test
+    func gcRootFailureDoesNotAcceptDifferentExistingTarget() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let oldStore = directory.appendingPathComponent("old")
+        let newStore = directory.appendingPathComponent("new")
+        try FileManager.default.createDirectory(at: oldStore, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: newStore, withIntermediateDirectories: true)
+        let root = directory.appendingPathComponent("kernel")
+        try FileManager.default.createSymbolicLink(at: root, withDestinationURL: oldStore)
+
+        #expect(throws: VMManagerError.self) {
+            try VMManager.ensureGCRoot(
+                named: "kernel", storePath: newStore.path, in: directory,
+                executableURL: URL(fileURLWithPath: "/usr/bin/false"), argumentPrefix: []
+            )
+        }
+        #expect(VMManager.canonicalPath(root) == VMManager.canonicalPath(oldStore))
+    }
+
+    @Test
+    func gcRootFailureWithoutExistingRootThrows() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let storePath = directory.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: storePath, withIntermediateDirectories: true)
+        #expect(throws: VMManagerError.self) {
+            try VMManager.ensureGCRoot(
+                named: "kernel", storePath: storePath.path, in: directory,
+                executableURL: URL(fileURLWithPath: "/usr/bin/false"), argumentPrefix: []
+            )
+        }
+    }
+
+    @Test
+    func gcRootFailureRejectsDanglingSymlink() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let storePath = directory.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: storePath, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("kernel"),
+            withDestinationURL: directory.appendingPathComponent("missing")
+        )
+
+        #expect(throws: VMManagerError.self) {
+            try VMManager.ensureGCRoot(
+                named: "kernel", storePath: storePath.path, in: directory,
+                executableURL: URL(fileURLWithPath: "/usr/bin/false"), argumentPrefix: []
+            )
+        }
+    }
+
+    @Test
+    func gcRootFailureRejectsRegularFile() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let storePath = directory.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: storePath, withIntermediateDirectories: true)
+        try Data("not a root".utf8).write(to: directory.appendingPathComponent("kernel"))
+
+        #expect(throws: VMManagerError.self) {
+            try VMManager.ensureGCRoot(
+                named: "kernel", storePath: storePath.path, in: directory,
+                executableURL: URL(fileURLWithPath: "/usr/bin/false"), argumentPrefix: []
+            )
+        }
+    }
+
+    @Test
+    func gcRootSuccessfulRefreshAtomicallyReplacesOldTarget() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let oldStore = directory.appendingPathComponent("old")
+        let newStore = directory.appendingPathComponent("new")
+        try FileManager.default.createDirectory(at: oldStore, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: newStore, withIntermediateDirectories: true)
+        let root = directory.appendingPathComponent("kernel")
+        try FileManager.default.createSymbolicLink(at: root, withDestinationURL: oldStore)
+        let fakeNixStore = try makeExecutableScript(
+            in: directory,
+            contents: "#!/bin/sh\nln -s \"$4\" \"$2\"\n"
+        )
+
+        try VMManager.ensureGCRoot(
+            named: "kernel", storePath: newStore.path, in: directory,
+            executableURL: fakeNixStore, argumentPrefix: []
+        )
+        #expect(VMManager.canonicalPath(root) == VMManager.canonicalPath(newStore))
+    }
+
+    @Test
+    func gcRootTimesOutFakeNixStore() throws {
+        let directory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: directory) }
+        let storePath = directory.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: storePath, withIntermediateDirectories: true)
+        let fakeNixStore = try makeExecutableScript(
+            in: directory,
+            contents: "#!/bin/sh\nexec sleep 5\n"
+        )
+
+        #expect(throws: VMManagerError.self) {
+            try VMManager.ensureGCRoot(
+                named: "kernel", storePath: storePath.path, in: directory,
+                executableURL: fakeNixStore, argumentPrefix: [], timeout: 0.05
+            )
+        }
+    }
+
+    private func makeExecutableScript(in directory: URL, contents: String) throws -> URL {
+        let script = directory.appendingPathComponent("fake-nix-store-\(UUID().uuidString)")
+        try contents.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        return script
     }
 }

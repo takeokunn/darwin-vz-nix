@@ -10,6 +10,7 @@ let
   workingDirectoryShell = lib.escapeShellArg cfg.workingDirectory;
   guestIPFileShell = lib.escapeShellArg "${cfg.workingDirectory}/guest-ip";
   workingDirectoryHasWhitespace = builtins.match ".*[[:space:]].*" cfg.workingDirectory != null;
+  workingDirectoryIsAbsolute = lib.hasPrefix "/" cfg.workingDirectory;
 
   vmArgs = [
     "${cfg.package}/bin/darwin-vz-nix"
@@ -26,6 +27,7 @@ let
     cfg.initrdPath
     "--system"
     cfg.systemPath
+    "--launchd-managed"
   ]
   ++ [
     "--state-dir"
@@ -146,6 +148,10 @@ in
         assertion = !workingDirectoryHasWhitespace;
         message = "services.darwin-vz.workingDirectory must not contain whitespace (log rotation cannot be configured for it): '${cfg.workingDirectory}'.";
       }
+      {
+        assertion = workingDirectoryIsAbsolute;
+        message = "services.darwin-vz.workingDirectory must be absolute: '${cfg.workingDirectory}'.";
+      }
     ];
 
     # Register as a build machine
@@ -172,7 +178,7 @@ in
       text = ''
         Host darwin-vz-nix
           User builder
-          ProxyCommand /bin/sh -c 'ip=$(/bin/cat -- "$1"); case "$ip" in *[!0-9.]*|"") echo "darwin-vz-nix: invalid guest IP in $1" >&2; exit 1;; esac; exec /usr/bin/nc "$ip" 22' sh ${guestIPFileShell}
+          ProxyCommand /bin/sh -c 'ip_file=$1; ip=$(/bin/cat -- "$ip_file"); invalid_ip() { echo "darwin-vz-nix: invalid guest IP in $ip_file" >&2; exit 1; }; case "$ip" in *[!0-9.]*|"") invalid_ip;; esac; old_ifs=$IFS; IFS=.; set -- $ip; IFS=$old_ifs; [ "$#" -eq 4 ] || invalid_ip; for octet in "$@"; do case "$octet" in 0|[1-9]|[1-9][0-9]*) ;; *) invalid_ip;; esac; [ "$octet" -le 255 ] 2>/dev/null || invalid_ip; done; exec /usr/bin/nc "$ip" 22' sh ${guestIPFileShell}
           IdentityFile ~/.ssh/darwin-vz-nix
           StrictHostKeyChecking accept-new
           UserKnownHostsFile ~/.ssh/darwin-vz-nix_known_hosts
@@ -184,7 +190,9 @@ in
       serviceConfig = {
         Label = "org.nixos.darwin-vz-nix";
         ProgramArguments = [ "${wrapperScript}" ];
-        KeepAlive = true;
+        KeepAlive = {
+          SuccessfulExit = false;
+        };
         RunAtLoad = true;
         WorkingDirectory = cfg.workingDirectory;
         StandardOutPath = "${cfg.workingDirectory}/daemon.log";
@@ -200,82 +208,24 @@ in
       '';
     };
 
-    # Ensure working directory exists with traversable permissions.
+    # Prepare state and the console user's SSH files before launchd starts.
     #
     # nix-darwin only ever runs the fixed set of activationScripts names it
     # hardcodes into system.activationScripts.script.text (see
     # modules/system/activation-scripts.nix upstream); `types.attrsOf
     # (types.submodule ...)` accepts any attribute name without error, but an
     # arbitrary one like the previous `darwin-vz-nix` key is silently never
-    # invoked. `postActivation` is one of the names nix-darwin actually
-    # stitches in (after launchd/homebrew), and `text`'s `types.lines` type
+    # invoked. `preActivation` is one of the names nix-darwin actually
+    # stitches in (before launchd), and `text`'s `types.lines` type
     # concatenates every module's contribution, so this composes safely with
-    # any other module also appending to `postActivation`.
-    system.activationScripts.postActivation = {
+    # any other module also appending to `preActivation`.
+    system.activationScripts.preActivation = {
       text = ''
         WORKING_DIRECTORY=${workingDirectoryShell}
-        mkdir -p "$WORKING_DIRECTORY"
-        chmod 755 "$WORKING_DIRECTORY"
-
-        SSH_WORK_DIR="$WORKING_DIRECTORY/ssh"
-        mkdir -p "$SSH_WORK_DIR"
-        chmod 700 "$SSH_WORK_DIR"
-
-        if [ -f "$SSH_WORK_DIR/id_ed25519" ]; then
-          chmod 600 "$SSH_WORK_DIR/id_ed25519"
-
-          if [ ! -f "$SSH_WORK_DIR/id_ed25519.pub" ]; then
-            if /usr/bin/ssh-keygen -y -f "$SSH_WORK_DIR/id_ed25519" > "$SSH_WORK_DIR/id_ed25519.pub.tmp"; then
-              printf ' builder@darwin-vz-nix\n' >> "$SSH_WORK_DIR/id_ed25519.pub.tmp"
-              mv "$SSH_WORK_DIR/id_ed25519.pub.tmp" "$SSH_WORK_DIR/id_ed25519.pub"
-            else
-              rm -f "$SSH_WORK_DIR/id_ed25519" "$SSH_WORK_DIR/id_ed25519.pub" "$SSH_WORK_DIR/id_ed25519.pub.tmp"
-              /usr/bin/ssh-keygen -q -f "$SSH_WORK_DIR/id_ed25519" -t ed25519 -N "" -C "builder@darwin-vz-nix"
-            fi
-          fi
-        else
-          rm -f "$SSH_WORK_DIR/id_ed25519.pub"
-          /usr/bin/ssh-keygen -q -f "$SSH_WORK_DIR/id_ed25519" -t ed25519 -N "" -C "builder@darwin-vz-nix"
-        fi
-        chmod 600 "$SSH_WORK_DIR/id_ed25519"
-        chmod 644 "$SSH_WORK_DIR/id_ed25519.pub"
-
-        # Auto-detect the console user (the logged-in macOS user)
         CONSOLE_USER=$(/usr/bin/stat -f '%Su' /dev/console)
-        # Resolve the real home directory from Directory Services rather than
-        # assuming /Users/$CONSOLE_USER: accounts with relocated homes would
-        # otherwise get the SSH key installed into a directory that is not
-        # their home (silently breaking `ssh darwin-vz-nix` for them).
-        # dscacheutil, not `dscl . -read ... NFSHomeDirectory`: for root, dscl
-        # renders the multi-valued attribute as one line
-        # ("NFSHomeDirectory: /var/root /private/var/root"), which would wreck
-        # the path; dscacheutil's `dir:` is always single-valued.
-        USER_HOME=$(/usr/bin/dscacheutil -q user -a name "$CONSOLE_USER" \
-          | /usr/bin/awk -F': ' '/^dir: /{print $2; exit}')
-        if [ -z "$USER_HOME" ]; then
-          if [ "$CONSOLE_USER" = "root" ]; then
-            USER_HOME="/var/root"
-          else
-            USER_HOME="/Users/$CONSOLE_USER"
-          fi
-        fi
-
-        USER_SSH_DIR="$USER_HOME/.ssh"
-        mkdir -p "$USER_SSH_DIR"
-        chmod 700 "$USER_SSH_DIR"
-        chown "$CONSOLE_USER" "$USER_SSH_DIR"
-
-        # Copy SSH key for user access.
-        if [ -f "$WORKING_DIRECTORY/ssh/id_ed25519" ]; then
-          install -m 600 -o "$CONSOLE_USER" "$WORKING_DIRECTORY/ssh/id_ed25519" "$USER_SSH_DIR/darwin-vz-nix"
-          install -m 644 -o "$CONSOLE_USER" "$WORKING_DIRECTORY/ssh/id_ed25519.pub" "$USER_SSH_DIR/darwin-vz-nix.pub"
-        fi
-
-        # Ensure known_hosts file exists with correct permissions
-        KNOWN_HOSTS="$USER_SSH_DIR/darwin-vz-nix_known_hosts"
-        touch "$KNOWN_HOSTS"
-        chmod 600 "$KNOWN_HOSTS"
-        chown "$CONSOLE_USER" "$KNOWN_HOSTS"
+        ${cfg.package}/bin/darwin-vz-nix prepare-host \
+          --state-dir "$WORKING_DIRECTORY" \
+          --console-user "$CONSOLE_USER"
       '';
     };
   };

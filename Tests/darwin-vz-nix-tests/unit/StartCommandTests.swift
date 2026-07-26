@@ -1,4 +1,5 @@
 import ArgumentParser
+import Darwin
 @testable import DarwinVZNixLib
 import Foundation
 import Testing
@@ -53,6 +54,23 @@ struct StartCommandTests {
     }
 
     @Test
+    func cleanupBeforeStartPreservesKnownHostPins() throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+
+        let config = try makeConfig(stateDirectory: stateDirectory)
+        let sshDirectory = stateDirectory.appendingPathComponent("ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: sshDirectory, withIntermediateDirectories: true)
+        let knownHostsURL = sshDirectory.appendingPathComponent("known_hosts")
+        let pin = "192.168.64.2 ssh-ed25519 pinned-key\n"
+        try pin.write(to: knownHostsURL, atomically: true, encoding: .utf8)
+
+        try Start.cleanupRuntimeFilesBeforeStart(config: config)
+
+        #expect(try String(contentsOf: knownHostsURL, encoding: .utf8) == pin)
+    }
+
+    @Test
     func cleanupBeforeStartRejectsRunningProcess() throws {
         let stateDirectory = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: stateDirectory) }
@@ -66,7 +84,10 @@ struct StartCommandTests {
             pid: ProcessInfo.processInfo.processIdentifier,
             executablePath: VMManager.currentExecutablePath(),
             stateDirectory: stateDirectory.path,
-            startedAt: Date()
+            startedAt: Date(),
+            processStartTimeMicroseconds: VMManager.processStartTimeMicroseconds(
+                for: ProcessInfo.processInfo.processIdentifier
+            )
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -138,7 +159,47 @@ struct StartCommandTests {
         close(third)
     }
 
-    private func makeConfig(stateDirectory: URL) throws -> VMConfig {
+    @Test
+    func terminationSignalsAreBlockedOnlyDuringSetup() throws {
+        var before = sigset_t()
+        #expect(pthread_sigmask(SIG_SETMASK, nil, &before) == 0)
+
+        try Start.withTerminationSignalsBlocked {
+            var during = sigset_t()
+            #expect(pthread_sigmask(SIG_SETMASK, nil, &during) == 0)
+            #expect(sigismember(&during, SIGINT) == 1)
+            #expect(sigismember(&during, SIGTERM) == 1)
+        }
+
+        var after = sigset_t()
+        #expect(pthread_sigmask(SIG_SETMASK, nil, &after) == 0)
+        #expect(sigismember(&after, SIGINT) == sigismember(&before, SIGINT))
+        #expect(sigismember(&after, SIGTERM) == sigismember(&before, SIGTERM))
+    }
+
+    @Test
+    func launchdRestartRemainsSuppressedUntilExplicitCleanup() throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+        let config = try makeConfig(stateDirectory: stateDirectory, launchdManaged: true)
+        let token = try SecureHostState.markIntentionalStop(stateDirectory: stateDirectory, pid: 42)
+
+        #expect(try Start.acknowledgeIntentionalStopRestartIfNeeded(config: config))
+        #expect(try Start.acknowledgeIntentionalStopRestartIfNeeded(config: config))
+        #expect(try SecureHostState.hasIntentionalStopMarker(stateDirectory: stateDirectory))
+        #expect(try SecureHostState.hasIntentionalStopAcknowledgement(
+            stateDirectory: stateDirectory,
+            expectedToken: token
+        ))
+
+        try SecureHostState.clearIntentionalStop(stateDirectory: stateDirectory)
+        #expect(try !Start.acknowledgeIntentionalStopRestartIfNeeded(config: config))
+    }
+
+    private func makeConfig(
+        stateDirectory: URL,
+        launchdManaged: Bool = false
+    ) throws -> VMConfig {
         let kernel = stateDirectory.appendingPathComponent("Image")
         let initrd = stateDirectory.appendingPathComponent("initrd")
         FileManager.default.createFile(atPath: kernel.path, contents: Data("kernel".utf8))
@@ -147,7 +208,8 @@ struct StartCommandTests {
         return VMConfig(
             kernelURL: kernel,
             initrdURL: initrd,
-            stateDirectory: stateDirectory
+            stateDirectory: stateDirectory,
+            launchdManaged: launchdManaged
         )
     }
 }

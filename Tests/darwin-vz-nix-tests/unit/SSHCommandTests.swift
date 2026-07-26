@@ -23,20 +23,27 @@ struct SSHCommandTests {
 
     @Test
     func recordedVMIsRunningRejectsMissingRecord() {
-        #expect(SSH.recordedVMIsRunning(nil) == false)
+        #expect(SSH.recordedVMIsRunning(nil, pidFileURL: URL(fileURLWithPath: "/tmp/vm.pid")) == false)
     }
 
     @Test
     func recordedVMIsRunningAcceptsCurrentExecutableRecord() throws {
         let executablePath = try #require(VMManager.currentExecutablePath())
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
         let record = VMProcessRecord(
             pid: ProcessInfo.processInfo.processIdentifier,
             executablePath: executablePath,
-            stateDirectory: "/tmp/darwin-vz-nix-tests",
-            startedAt: Date()
+            stateDirectory: stateDirectory.path,
+            startedAt: Date(),
+            processStartTimeMicroseconds: VMManager.processStartTimeMicroseconds(
+                for: ProcessInfo.processInfo.processIdentifier
+            )
         )
 
-        #expect(SSH.recordedVMIsRunning(record) == true)
+        #expect(SSH.recordedVMIsRunning(
+            record, pidFileURL: stateDirectory.appendingPathComponent("vm.pid")
+        ) == true)
     }
 
     @Test
@@ -48,7 +55,9 @@ struct SSHCommandTests {
             startedAt: Date()
         )
 
-        #expect(SSH.recordedVMIsRunning(record) == false)
+        #expect(SSH.recordedVMIsRunning(
+            record, pidFileURL: URL(fileURLWithPath: "/tmp/darwin-vz-nix-tests/vm.pid")
+        ) == false)
     }
 
     @Test

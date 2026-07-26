@@ -5,18 +5,18 @@
   services.openssh = {
     enable = true;
     settings = {
+      AllowUsers = [ "builder" ];
       PermitRootLogin = "no";
       PasswordAuthentication = false;
+      KbdInteractiveAuthentication = false;
+      DisableForwarding = true;
+      X11Forwarding = false;
     };
   };
 
-  # Builder user (SSH login target for remote builds and deploy-rs).
-  # Not in the wheel group, but granted passwordless sudo so that deploy-rs (and
-  # other switch-to-configuration based deploys) can activate a system generation
-  # as root over SSH. Remote Nix builds themselves go through the nix-daemon
-  # (which trusts "builder" via nix.settings.trusted-users) and need no sudo.
-  # This is the user's own builder VM, so the escalation is acceptable; the guest
-  # still never receives the host's private SSH key (only the public key).
+  # Builder user (SSH login target for remote builds and diagnostics).
+  # Not in the wheel group and has no sudo access. Remote Nix builds go through
+  # the trusted nix-daemon. The guest receives only the host's public SSH key.
   users.users.builder = {
     isNormalUser = true;
     group = "builder";
@@ -46,18 +46,6 @@
     # daemon (system.slice) instead of executing them inside the login session.
   };
   users.groups.builder = { };
-
-  security.sudo.extraRules = [
-    {
-      users = [ "builder" ];
-      commands = [
-        {
-          command = "ALL";
-          options = [ "NOPASSWD" ];
-        }
-      ];
-    }
-  ];
 
   # SSH key injection from host via VirtioFS
   fileSystems."/run/ssh-keys" = {

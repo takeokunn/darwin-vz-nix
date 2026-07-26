@@ -18,32 +18,51 @@ public struct Stop: AsyncParsableCommand {
         let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
         let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
+        var stateMetadata = stat()
+        if lstat(stateDirectory.path, &stateMetadata) != 0, errno == ENOENT {
+            throw CleanExit.message("No running VM found (PID file not found).")
+        }
+        try SecureHostState.ensureAndValidateStateDirectory(stateDirectory, create: false)
+
+        let observedGeneration = Status.pidFileGeneration(at: pidFileURL)
         guard let record = VMManager.readPIDRecord(from: pidFileURL) else {
-            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory, observedGeneration: observedGeneration)
             throw CleanExit.message("No running VM found (PID file not found).")
         }
 
         guard VMManager.isProcessRunning(pid: record.pid) else {
-            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory, observedGeneration: observedGeneration)
             throw CleanExit.message("No running VM found (stale PID file cleaned up).")
         }
 
-        guard VMManager.processMatchesRecord(pid: record.pid, expectedExecutablePath: record.executablePath) else {
-            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+        guard VMManager.processMatchesRecord(record, pidFileURL: pidFileURL) else {
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory, observedGeneration: observedGeneration)
             throw CleanExit.message("No running VM found (PID belongs to another process).")
         }
 
-        let stopped = try VMManager.terminateProcess(
-            pid: record.pid,
-            pidFileURL: pidFileURL,
-            force: force,
-            expectedExecutablePath: record.executablePath
-        )
-        if !stopped {
+        if record.launchdManaged {
+            _ = try SecureHostState.markIntentionalStop(stateDirectory: stateDirectory, pid: record.pid)
+        }
+        let termination: VMProcessTerminationResult
+        do {
+            termination = try VMManager.terminateProcess(
+                pid: record.pid,
+                pidFileURL: pidFileURL,
+                force: force
+            )
+        } catch {
+            if record.launchdManaged {
+                try? SecureHostState.clearIntentionalStop(stateDirectory: stateDirectory)
+            }
+            throw error
+        }
+        if !termination.stopped {
+            if record.launchdManaged {
+                try? SecureHostState.clearIntentionalStop(stateDirectory: stateDirectory)
+            }
             throw VMManagerError.stopFailed("VM process \(record.pid) could not be stopped.")
         }
-
         // Clean up state files after stop
-        Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+        Status.cleanupStoppedRuntimeFiles(in: stateDirectory, observedGeneration: observedGeneration)
     }
 }

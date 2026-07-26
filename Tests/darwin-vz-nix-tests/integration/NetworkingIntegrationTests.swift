@@ -106,12 +106,7 @@ struct NetworkingIntegrationTests {
     }
 
     @Test
-    func removeKnownHostEntryLeavesRecoverableOldBackup() throws {
-        // ssh-keygen -R rewrites in place and drops a "<file>.old" backup. The
-        // scrubUserKnownHosts fix deletes that sibling for the console-user
-        // branch; here we assert the backup ssh-keygen leaves is itself owned
-        // by the current user (so no root-owned cruft is produced off-root) and
-        // that deleting it is a no-op that leaves the live file intact.
+    func removeKnownHostEntryDoesNotLeaveOldBackup() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
 
@@ -122,12 +117,7 @@ struct NetworkingIntegrationTests {
         NetworkManager.removeKnownHostEntry(host: "darwin-vz-nix", knownHostsURL: knownHostsURL)
 
         let backupURL = URL(fileURLWithPath: knownHostsURL.path + ".old")
-        if FileManager.default.fileExists(atPath: backupURL.path) {
-            let attrs = try FileManager.default.attributesOfItem(atPath: backupURL.path)
-            let ownerID = attrs[.ownerAccountID] as? UInt32
-            #expect(ownerID == getuid())
-            try? FileManager.default.removeItem(at: backupURL)
-        }
+        #expect(!FileManager.default.fileExists(atPath: backupURL.path))
 
         // The live known_hosts survives regardless of backup handling.
         #expect(FileManager.default.fileExists(atPath: knownHostsURL.path))
@@ -136,7 +126,7 @@ struct NetworkingIntegrationTests {
     }
 
     @Test
-    func scrubStateKnownHostsRemovesOnlyTargetIP() throws {
+    func scrubStateKnownHostsRemovesOnlyStableAlias() throws {
         let tempDir = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: tempDir) }
 
@@ -144,18 +134,18 @@ struct NetworkingIntegrationTests {
         try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true)
         let knownHostsURL = sshDir.appendingPathComponent("known_hosts")
         let entries = """
-        192.168.64.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4stale0000000000000000000000000000
+        darwin-vz-nix-state ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4stale0000000000000000000000000000
         192.168.64.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4fresh0000000000000000000000000000
         """
         try (entries + "\n").write(to: knownHostsURL, atomically: true, encoding: .utf8)
 
         let manager = NetworkManager(stateDirectory: tempDir)
-        manager.scrubStateKnownHosts(ip: "192.168.64.9")
+        manager.scrubStateKnownHosts()
 
-        // Only the pin for the freshly discovered IP is evicted; other VMs'
-        // pins in the same state file must survive the per-boot scrub.
+        // Explicit destroy removes only the selected VM's pin; other VMs'
+        // pins in the same state file must survive.
         let remaining = try String(contentsOf: knownHostsURL, encoding: .utf8)
-        #expect(!remaining.contains("192.168.64.9"))
+        #expect(!remaining.contains("darwin-vz-nix-state"))
         #expect(remaining.contains("192.168.64.10"))
     }
 
@@ -179,6 +169,36 @@ struct NetworkingIntegrationTests {
         #expect(try String(contentsOf: target, encoding: .utf8) == "PROTECTED\n")
         let linkAttrs = try FileManager.default.attributesOfItem(atPath: link.path)
         #expect(linkAttrs[.type] as? FileAttributeType == .typeSymbolicLink)
+    }
+
+    @Test
+    func removeKnownHostEntryRejectsPathReplacementAfterOpen() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let knownHostsURL = tempDir.appendingPathComponent("known_hosts")
+        let displacedURL = tempDir.appendingPathComponent("known_hosts.displaced")
+        let sentinelURL = tempDir.appendingPathComponent("sentinel")
+        let staleEntry = "darwin-vz-nix ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP4stale0000000000000000000000000000\n"
+        try staleEntry.write(to: knownHostsURL, atomically: true, encoding: .utf8)
+        try "SENTINEL\n".write(to: sentinelURL, atomically: true, encoding: .utf8)
+
+        let removed = NetworkManager.removeKnownHostEntry(
+            host: "darwin-vz-nix",
+            knownHostsURL: knownHostsURL,
+            afterOpen: {
+                try! FileManager.default.moveItem(at: knownHostsURL, to: displacedURL)
+                try! FileManager.default.createSymbolicLink(
+                    at: knownHostsURL,
+                    withDestinationURL: sentinelURL
+                )
+            }
+        )
+
+        #expect(!removed)
+        #expect(try String(contentsOf: sentinelURL, encoding: .utf8) == "SENTINEL\n")
+        #expect(try String(contentsOf: displacedURL, encoding: .utf8) == staleEntry)
+        #expect(!FileManager.default.fileExists(atPath: knownHostsURL.path + ".old"))
     }
 
     @Test
@@ -245,6 +265,80 @@ struct NetworkingIntegrationTests {
         let repairedPublicKey = try String(contentsOf: publicKeyURL, encoding: .utf8)
         #expect(repairedPrivateKey == privateKey)
         #expect(repairedPublicKey.hasPrefix("ssh-ed25519"))
+    }
+
+    @Test
+    func ensureSSHKeysRepairsMismatchedPublicKey() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let manager = NetworkManager(stateDirectory: tempDir)
+        try manager.ensureSSHKeys()
+
+        let privateKeyURL = VMConfig.sshKeyURL(for: tempDir)
+        let publicKeyURL = URL(fileURLWithPath: privateKeyURL.path + ".pub")
+        let privateKey = try Data(contentsOf: privateKeyURL)
+        let expectedPublicKey = try String(contentsOf: publicKeyURL, encoding: .utf8)
+        try "ssh-ed25519 AAAA-mismatched builder@darwin-vz-nix\n".write(
+            to: publicKeyURL,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try manager.ensureSSHKeys()
+
+        #expect(try Data(contentsOf: privateKeyURL) == privateKey)
+        let expectedKeyMaterial = expectedPublicKey.split(whereSeparator: { $0.isWhitespace }).prefix(2)
+        let repairedPublicKey = try String(contentsOf: publicKeyURL, encoding: .utf8)
+        let repairedKeyMaterial = repairedPublicKey.split(whereSeparator: { $0.isWhitespace }).prefix(2)
+        #expect(repairedKeyMaterial.elementsEqual(expectedKeyMaterial))
+    }
+
+    @Test
+    func ensureSSHKeysPreservesPrivateKeyWhenPublicKeyInstallFails() throws {
+        enum InjectedFailure: Error { case stop }
+
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let manager = NetworkManager(stateDirectory: tempDir)
+        try manager.ensureSSHKeys()
+
+        let privateKeyURL = VMConfig.sshKeyURL(for: tempDir)
+        let publicKeyURL = URL(fileURLWithPath: privateKeyURL.path + ".pub")
+        let privateKey = try Data(contentsOf: privateKeyURL)
+        try FileManager.default.removeItem(at: publicKeyURL)
+
+        #expect(throws: InjectedFailure.self) {
+            try manager.ensureSSHKeys(beforePublicKeyInstall: { throw InjectedFailure.stop })
+        }
+
+        #expect(try Data(contentsOf: privateKeyURL) == privateKey)
+        #expect(!FileManager.default.fileExists(atPath: publicKeyURL.path))
+    }
+
+    @Test
+    func ensureSSHKeysRejectsPublicKeySymlink() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let manager = NetworkManager(stateDirectory: tempDir)
+        try manager.ensureSSHKeys()
+
+        let privateKeyURL = VMConfig.sshKeyURL(for: tempDir)
+        let publicKeyURL = URL(fileURLWithPath: privateKeyURL.path + ".pub")
+        let sentinelURL = tempDir.appendingPathComponent("sentinel")
+        let privateKey = try Data(contentsOf: privateKeyURL)
+        try FileManager.default.removeItem(at: publicKeyURL)
+        try "SENTINEL\n".write(to: sentinelURL, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: publicKeyURL, withDestinationURL: sentinelURL)
+
+        #expect(throws: NetworkError.self) {
+            try manager.ensureSSHKeys()
+        }
+
+        #expect(try Data(contentsOf: privateKeyURL) == privateKey)
+        #expect(try String(contentsOf: sentinelURL, encoding: .utf8) == "SENTINEL\n")
     }
 
     @Test

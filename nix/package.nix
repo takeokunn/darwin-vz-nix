@@ -2,11 +2,14 @@
   lib,
   stdenv,
   darwin,
+  apple-sdk_14,
   swift-bin,
   swift-argument-parser-src,
 }:
 
 let
+  swiftFiles =
+    path: lib.fileset.fileFilter (file: file.type == "regular" && file.hasExt "swift") path;
   packageResolved = builtins.fromJSON (builtins.readFile ../Package.resolved);
   swiftArgumentParserPin = lib.findFirst (
     pin: pin.identity == "swift-argument-parser"
@@ -46,25 +49,19 @@ stdenv.mkDerivation (finalAttrs: {
   # the package version, and the release tag all derive from it.
   version = lib.removeSuffix "\n" (builtins.readFile ../VERSION);
 
-  src = lib.cleanSourceWith {
-    src = ./..;
-    filter =
-      path: _type:
-      let
-        baseName = builtins.baseNameOf path;
-      in
-      !(
-        baseName == ".git"
-        || baseName == ".build"
-        || baseName == ".swiftpm"
-        || baseName == ".swiftpm-cache"
-        || baseName == ".home"
-        || lib.hasPrefix "result" baseName
-        || lib.hasSuffix ".md" baseName
-      );
+  src = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ../Package.swift
+      ../Package.resolved
+      ../VERSION
+      (swiftFiles ../Sources)
+      (swiftFiles ../Tests)
+    ];
   };
 
   nativeBuildInputs = [
+    apple-sdk_14
     swift-bin
     darwin.sigtool
   ];
@@ -91,9 +88,6 @@ stdenv.mkDerivation (finalAttrs: {
     runHook preBuild
 
     export HOME=$PWD/.home
-    unset CPLUS_INCLUDE_PATH NIX_CC NIX_LDFLAGS NIX_CFLAGS_COMPILE CC CXX DEVELOPER_DIR
-    export SDKROOT=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
-    export NIX_ENFORCE_PURITY=0
     swift build \
       -c release \
       --disable-sandbox \

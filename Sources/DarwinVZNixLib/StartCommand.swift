@@ -52,6 +52,9 @@ public struct Start: AsyncParsableCommand {
     @Option(name: .long, help: "State directory for VM data (default: ~/.local/share/darwin-vz-nix)")
     var stateDir: String?
 
+    @Flag(name: .long, help: "Internal flag used by the launchd service")
+    var launchdManaged: Bool = false
+
     public init() {}
 
     public mutating func run() async throws {
@@ -65,10 +68,9 @@ public struct Start: AsyncParsableCommand {
             stateDirectory: stateDir.map { URL(fileURLWithPath: $0) },
             rosetta: rosetta,
             shareNixStore: shareNixStore,
-            idleTimeout: idleTimeout
+            idleTimeout: idleTimeout,
+            launchdManaged: launchdManaged
         )
-
-        try Self.cleanupRuntimeFilesBeforeStart(config: config)
 
         // Invalid configuration (bad cores/memory/disk-size, missing artifacts)
         // is a usage error (64, EX_USAGE) per the documented exit-code contract,
@@ -79,14 +81,22 @@ public struct Start: AsyncParsableCommand {
         } catch let error as VMConfigError {
             try exitUsage(error.errorDescription ?? "Invalid VM configuration.")
         }
-        try config.ensureStateDirectory()
 
-        // Take an exclusive, process-lifetime lock on the state directory before
-        // touching the disk image. The PID-file guard above is check-then-act
-        // and the PID file is not written until much later, so two `start` runs
-        // racing on the same --state-dir could both open disk.img read-write and
-        // corrupt the guest filesystem. flock closes that window; the descriptor
-        // is held for the process lifetime and released automatically on exit.
+        // A launchd restart after an intentional SIGKILL durably acknowledges the
+        // marker and exits successfully, which makes KeepAlive.SuccessfulExit stop retrying.
+        // The marker remains until destroy or an explicit manual start cleans it up,
+        // so a crash or acknowledgement failure cannot turn into an unintended restart.
+        // Manual starts clear a stale marker and proceed normally.
+        if try Self.acknowledgeIntentionalStopRestartIfNeeded(config: config) {
+            return
+        }
+
+        try SecureHostState.ensureAndValidateStateDirectory(config.stateDirectory)
+        if !launchdManaged {
+            try SecureHostState.clearIntentionalStop(stateDirectory: config.stateDirectory)
+        }
+        // Serialize stale-state cleanup with all other VM generations. The descriptor
+        // remains held for the process lifetime, including disk-image access.
         let lockFD = Self.tryLockStateDirectory(config.stateDirectory)
         guard lockFD >= 0 else {
             try exitOperational(
@@ -95,33 +105,38 @@ public struct Start: AsyncParsableCommand {
             )
         }
         Self.heldStateLockFD = lockFD
+        try Self.cleanupRuntimeFilesBeforeStart(config: config)
 
         let networkManager = NetworkManager(stateDirectory: config.stateDirectory)
         try networkManager.ensureSSHKeys()
 
         let vmManager = VMManager(config: config, verbose: verbose)
 
-        signal(SIGINT, SIG_IGN)
-        signal(SIGTERM, SIG_IGN)
-
         // Both signals funnel into the single shutdown coordinator, which requests
         // a guest power-off and waits for the guest to actually stop before the
         // process exits. We deliberately do NOT call Darwin.exit() here: exiting
         // immediately would kill the in-process VM (and its VirtioFS server) before
         // the guest finishes syncing, risking data loss on every clean stop.
-        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        sigintSource.setEventHandler {
-            DaemonLogger.vm.info("Received SIGINT, shutting down VM...")
-            vmManager.beginGracefulShutdown(exitCode: 0)
-        }
-        sigintSource.resume()
+        let (sigintSource, sigtermSource) = try Self.withTerminationSignalsBlocked {
+            signal(SIGINT, SIG_IGN)
+            signal(SIGTERM, SIG_IGN)
 
-        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        sigtermSource.setEventHandler {
-            DaemonLogger.vm.info("Received SIGTERM, shutting down VM...")
-            vmManager.beginGracefulShutdown(exitCode: 0)
+            let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+            sigintSource.setEventHandler {
+                DaemonLogger.vm.info("Received SIGINT, shutting down VM...")
+                vmManager.beginGracefulShutdown(exitCode: 0)
+            }
+            sigintSource.resume()
+
+            let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+            sigtermSource.setEventHandler {
+                DaemonLogger.vm.info("Received SIGTERM, shutting down VM...")
+                vmManager.beginGracefulShutdown(exitCode: 0)
+            }
+            sigtermSource.resume()
+            return (sigintSource, sigtermSource)
         }
-        sigtermSource.resume()
+        _ = (sigintSource, sigtermSource)
 
         DaemonLogger.vm.info("Starting NixOS VM (cores: \(cores), memory: \(memory)MB, disk: \(diskSize))...")
 
@@ -133,12 +148,6 @@ public struct Start: AsyncParsableCommand {
         do {
             let guestIP = try await networkManager.discoverGuestIP(notBefore: vmStartTime)
             try networkManager.writeGuestIP(guestIP)
-            // Evict stale host-key pins ONCE per boot, right after the IP is
-            // known. `ssh` connections during this boot then re-pin via
-            // accept-new and keep verifying against that pin; scrubbing any
-            // later (e.g. per connection) would defeat host-key pinning.
-            networkManager.scrubStateKnownHosts(ip: guestIP)
-            NetworkManager.scrubUserKnownHosts()
             DaemonLogger.vm.info("Guest IP: \(guestIP)")
         } catch {
             DaemonLogger.vm.warning("Could not discover guest IP: \(error.localizedDescription)")
@@ -166,23 +175,42 @@ public struct Start: AsyncParsableCommand {
     /// the lock), or -1 if the lock is already held or the file can't be opened.
     /// Separated from `run()` so the exclusion can be unit-tested.
     static func tryLockStateDirectory(_ stateDirectory: URL) -> Int32 {
-        let lockPath = stateDirectory.appendingPathComponent("vm.lock").path
-        let fd = open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { return -1 }
-        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            close(fd)
-            return -1
+        (try? SecureHostState.openAndLockStateDirectory(stateDirectory)) ?? -1
+    }
+
+    static func acknowledgeIntentionalStopRestartIfNeeded(config: VMConfig) throws -> Bool {
+        guard config.launchdManaged,
+              FileManager.default.fileExists(atPath: config.stateDirectory.path),
+              let token = try SecureHostState.validatedIntentionalStopToken(
+                  stateDirectory: config.stateDirectory
+              )
+        else {
+            return false
         }
-        return fd
+        try SecureHostState.acknowledgeIntentionalStop(
+            stateDirectory: config.stateDirectory,
+            token: token
+        )
+        return true
+    }
+
+    static func withTerminationSignalsBlocked<T>(_ body: () throws -> T) throws -> T {
+        var signals = sigset_t()
+        sigemptyset(&signals)
+        sigaddset(&signals, SIGINT)
+        sigaddset(&signals, SIGTERM)
+        var previous = sigset_t()
+        guard pthread_sigmask(SIG_BLOCK, &signals, &previous) == 0 else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { pthread_sigmask(SIG_SETMASK, &previous, nil) }
+        return try body()
     }
 
     static func cleanupRuntimeFilesBeforeStart(config: VMConfig) throws {
         if let existingRecord = VMManager.readPIDRecord(from: config.pidFileURL) {
             let isRunning = VMManager.isProcessRunning(pid: existingRecord.pid)
-            let matchesRecord = VMManager.processMatchesRecord(
-                pid: existingRecord.pid,
-                expectedExecutablePath: existingRecord.executablePath
-            )
+            let matchesRecord = VMManager.processMatchesRecord(existingRecord, pidFileURL: config.pidFileURL)
             if isRunning, matchesRecord {
                 // Already-running is an operational state (exit 3), not a usage error (64).
                 try exitOperational(
@@ -191,6 +219,7 @@ public struct Start: AsyncParsableCommand {
             }
         }
 
-        Status.cleanupStoppedRuntimeFiles(in: config.stateDirectory)
+        try? FileManager.default.removeItem(at: config.pidFileURL)
+        try? FileManager.default.removeItem(at: config.guestIPFileURL)
     }
 }
