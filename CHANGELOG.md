@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Benchmark setup failures now stop the run immediately instead of emitting misleading near-zero timing samples
 - Guest IP discovery now checks every unexpired DHCP lease for the VM's expected MAC address, probes SSH to populate the ARP table when necessary, and validates an exact MAC match before accepting an address
 - Benchmark iterations now wait for the VM state lock to be released before starting the next sample, preventing teardown races and false `vm.lock` failures
+- State-lock failures unrelated to contention are no longer misclassified as a busy VM
+- The default benchmark workload now builds a run- and iteration-specific derivation entirely offline, making both cold and repeated samples measurable without network access or store-path reuse
 - Remote benchmark workloads are passed to the guest shell as one safely quoted command, preserving arguments and shell metacharacters instead of truncating multi-word commands
 
 ## [0.2.0] - 2026-07-26
