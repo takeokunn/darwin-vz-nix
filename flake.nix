@@ -779,7 +779,13 @@
               touch $out
             '';
         github-actions =
-          pkgs.runCommand "check-github-actions" { nativeBuildInputs = [ pkgs.actionlint ]; }
+          pkgs.runCommand "check-github-actions"
+            {
+              nativeBuildInputs = [
+                pkgs.actionlint
+                pkgs.perl
+              ];
+            }
             ''
               cd ${./.}
               actionlint -color=false .github/workflows/*.yml
@@ -835,8 +841,14 @@
               grep -F 'DARWIN_VZ_NIX_SMOKE_STATE_DIR: ''${{ github.workspace }}/ci-artifacts/smoke-state' .github/workflows/release.yml >/dev/null
               grep -F 'DARWIN_VZ_NIX_SMOKE_KEEP_STATE: "1"' .github/workflows/release.yml >/dev/null
               grep -F "DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS: never" .github/workflows/release.yml >/dev/null
-              grep -E "if: inputs[.]cachix-auth-token == [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
-              grep -E "if: inputs[.]cachix-auth-token != [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
+              perl -ne '$found ||= /if: inputs[.]use-existing-nix != \x27true\x27/; END { exit !$found }' .github/actions/setup-nix/action.yml
+              perl -ne '$found ||= /if: inputs[.]use-existing-nix == \x27true\x27/; END { exit !$found }' .github/actions/setup-nix/action.yml
+              perl -ne '$found ||= /if: inputs[.]use-existing-nix != \x27true\x27 && inputs[.]cachix-auth-token == \x27{2}$/; END { exit !$found }' .github/actions/setup-nix/action.yml
+              perl -ne '$found ||= /if: inputs[.]use-existing-nix != \x27true\x27 && inputs[.]cachix-auth-token != \x27{2}$/; END { exit !$found }' .github/actions/setup-nix/action.yml
+              perl -ne '$found ||= /name: Configure existing Nix for Cachix pulls/; END { exit !$found }' .github/actions/setup-nix/action.yml
+              perl -ne '$found ||= /NIX_CONFIG<<EOF/; END { exit !$found }' .github/actions/setup-nix/action.yml
+              perl -ne '$count++ if /use-existing-nix: true/; END { exit($count == 1 ? 0 : 1) }' .github/workflows/vm-smoke.yml
+              perl -ne '$count++ if /use-existing-nix: true/; END { exit($count == 1 ? 0 : 1) }' .github/workflows/release.yml
               grep -F "Verify release tag matches package version" .github/workflows/release.yml >/dev/null
               grep -F "nix eval --raw .#packages.aarch64-darwin.darwin-vz-nix.version" .github/workflows/release.yml >/dev/null
               grep -F 'expected_tag="v''${package_version}"' .github/workflows/release.yml >/dev/null
