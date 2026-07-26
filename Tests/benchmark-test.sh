@@ -127,7 +127,7 @@ perl -MJSON::PP -e '
   die "cold boot failed\n" unless $result->{summary}{cold_boot}{failures} == 0;
   die "warm boot failed\n" unless $result->{summary}{warm_boot}{failures} == 0;
   die "workload failed\n" unless $result->{summary}{build_workload}{failures} == 0;
-  die "wrong workload label\n" unless $result->{metadata}{workload_label} eq "offline_nix_derivation_rebuild";
+  die "wrong workload label\n" unless $result->{metadata}{workload_label} eq "offline_unique_derivation_build";
 ' < "$TMP/success.json" || {
   perl -ne 'print' "$TMP/success-stderr" >&2
   exit 1
@@ -135,10 +135,16 @@ perl -MJSON::PP -e '
 perl -F'\t' -lane '
   next unless $F[1] =~ /^sh -lc /;
   die "workload was not passed as one remote argument\n" unless $F[0] == 1;
-  die "workload is not a forced rebuild\n" unless $F[1] =~ /nix build --no-link --rebuild --expr/;
+  die "workload can access the network\n" unless $F[1] =~ /nix build --offline --no-link --expr/;
+  die "workload still relies on rebuild check semantics\n" if $F[1] =~ /--rebuild/;
   die "workload is not the fixed offline derivation\n" unless $F[1] =~ /builtins\.derivation/ && $F[1] =~ /aarch64-linux/;
+  die "workload name lacks an iteration suffix\n" unless $F[1] =~ /name = "darwin-vz-nix-benchmark-[A-Za-z0-9]+-([12])"/;
+  $iterations{$1}++;
   $count++;
-  END { die "expected one workload per iteration (got " . (0 + $count) . ")\n" unless $count == 2 }
+  END {
+    die "expected one workload per iteration (got " . (0 + $count) . ")\n" unless $count == 2;
+    die "workload names were not unique per iteration\n" unless $iterations{1} == 1 && $iterations{2} == 1;
+  }
 ' "$TMP/ssh-commands" || {
   echo 'default workload invocation is not isolated and reproducible' >&2
   exit 1

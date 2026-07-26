@@ -99,7 +99,7 @@ struct DestroyCommandTests {
         let disk = stateDirectory.appendingPathComponent("disk.img")
         try Data("disk".utf8).write(to: disk)
 
-        let lockFD = Start.tryLockStateDirectory(stateDirectory)
+        let lockFD = try Start.tryLockStateDirectory(stateDirectory)
         #expect(lockFD >= 0)
         defer { close(lockFD) }
 
@@ -355,7 +355,7 @@ struct DestroyCommandTests {
         let result = try Destroy.finalizeStateDirectory(lockedState) {
             #expect(!FileManager.default.fileExists(atPath: stateDirectory.path))
             try SecureHostState.ensureAndValidateStateDirectory(stateDirectory)
-            newLockFD = Start.tryLockStateDirectory(stateDirectory)
+            newLockFD = try Start.tryLockStateDirectory(stateDirectory)
             #expect(newLockFD >= 0)
         }
         defer {
