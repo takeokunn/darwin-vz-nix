@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Benchmark setup failures now stop the run immediately instead of emitting misleading near-zero timing samples
+- Benchmark durations and timeout deadlines now use `CLOCK_MONOTONIC`, so host sleep/wake time cannot contaminate benchmark samples
 - Guest IP discovery now checks every unexpired DHCP lease for the VM's expected MAC address, probes SSH to populate the ARP table when necessary, and validates an exact MAC match before accepting an address
 - Benchmark iterations now wait for the VM state lock to be released before starting the next sample, preventing teardown races and false `vm.lock` failures
 - State-lock failures unrelated to contention are no longer misclassified as a busy VM
