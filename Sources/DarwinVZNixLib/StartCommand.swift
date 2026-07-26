@@ -97,7 +97,7 @@ public struct Start: AsyncParsableCommand {
         }
         // Serialize stale-state cleanup with all other VM generations. The descriptor
         // remains held for the process lifetime, including disk-image access.
-        let lockFD = Self.tryLockStateDirectory(config.stateDirectory)
+        let lockFD = try Self.tryLockStateDirectory(config.stateDirectory)
         guard lockFD >= 0 else {
             try exitOperational(
                 "Could not acquire the VM state lock for \(config.stateDirectory.path). "
@@ -172,10 +172,17 @@ public struct Start: AsyncParsableCommand {
 
     /// Try to take an exclusive, non-blocking `flock` on `<stateDirectory>/vm.lock`.
     /// Returns the open descriptor on success (caller must keep it open to hold
-    /// the lock), or -1 if the lock is already held or the file can't be opened.
+    /// the lock), or -1 only if another process holds the lock. Validation and
+    /// other system-call failures remain actionable errors for the caller.
     /// Separated from `run()` so the exclusion can be unit-tested.
-    static func tryLockStateDirectory(_ stateDirectory: URL) -> Int32 {
-        (try? SecureHostState.openAndLockStateDirectory(stateDirectory)) ?? -1
+    static func tryLockStateDirectory(_ stateDirectory: URL) throws -> Int32 {
+        do {
+            return try SecureHostState.openAndLockStateDirectory(stateDirectory)
+        } catch let SecureHostStateError.systemCall(operation, code)
+            where operation == "flock vm.lock" && (code == EWOULDBLOCK || code == EAGAIN)
+        {
+            return -1
+        }
     }
 
     static func acknowledgeIntentionalStopRestartIfNeeded(config: VMConfig) throws -> Bool {

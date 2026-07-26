@@ -35,7 +35,8 @@ KERNEL=''
 INITRD=''
 SYSTEM=''
 EXECUTE=0
-WORKLOAD='nix build --no-link /run/current-system'
+WORKLOAD='nix build --no-link --rebuild --expr '\''builtins.derivation { name = "darwin-vz-nix-benchmark"; system = "aarch64-linux"; builder = "/bin/sh"; args = [ "-c" "printf benchmark > $out" ]; }'\'''
+WORKLOAD_LABEL=offline_nix_derivation_rebuild
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --execute-vm) EXECUTE=1; shift ;;
@@ -45,7 +46,7 @@ while [ "$#" -gt 0 ]; do
       case "$key" in
         --output) OUTPUT=$value ;; --iterations) ITERATIONS=$value ;; --cli) CLI=$value ;;
         --cores) CORES=$value ;; --memory) MEMORY=$value ;; --disk-size) DISK_SIZE=$value ;;
-        --timeout) TIMEOUT=$value ;; --workload-command) WORKLOAD=$value ;; --kernel) KERNEL=$value ;;
+        --timeout) TIMEOUT=$value ;; --workload-command) WORKLOAD=$value; WORKLOAD_LABEL=custom_guest_command ;; --kernel) KERNEL=$value ;;
         --initrd) INITRD=$value ;; --system) SYSTEM=$value ;;
       esac ;;
     --help|-h) usage; exit 0 ;;
@@ -215,12 +216,12 @@ HARDWARE_MODEL=$(sysctl -n hw.model)
 perl -MJSON::PP -e '
   print JSON::PP->new->canonical->encode({
     iterations=>0+$ARGV[0], cores=>0+$ARGV[1], memory_mb=>0+$ARGV[2], disk_size=>$ARGV[3],
-    timeout_seconds=>0+$ARGV[4], workload_label=>"representative_nix_build",
+    timeout_seconds=>0+$ARGV[4], workload_label=>$ARGV[12],
     host_arch=>$ARGV[5], macos_version=>$ARGV[6], revision=>$ARGV[7], cli_sha256=>$ARGV[8],
     guest_artifact_sha256=>$ARGV[9], nix_version=>$ARGV[10], hardware_model=>$ARGV[11],
     cold_definition=>"fresh harness-owned state directory",
     warm_definition=>"same persistent disk after graceful shutdown",
-  })' "$ITERATIONS" "$CORES" "$MEMORY" "$DISK_SIZE" "$TIMEOUT" "$(uname -m)" "$MACOS_VERSION" "$REVISION" "$CLI_SHA256" "$GUEST_ARTIFACT_SHA256" "$NIX_VERSION" "$HARDWARE_MODEL" > "$METADATA"
+  })' "$ITERATIONS" "$CORES" "$MEMORY" "$DISK_SIZE" "$TIMEOUT" "$(uname -m)" "$MACOS_VERSION" "$REVISION" "$CLI_SHA256" "$GUEST_ARTIFACT_SHA256" "$NIX_VERSION" "$HARDWARE_MODEL" "$WORKLOAD_LABEL" > "$METADATA"
 
 i=1
 REMOTE_COMMAND="sh -lc $(shell_quote "$WORKLOAD")"

@@ -31,6 +31,9 @@ while [ "$#" -gt 0 ]; do
 done
 case "$command" in
   start)
+    if [ -n "${TEST_START_LOG:-}" ]; then
+      printf '%s\n' "$state_dir" >> "$TEST_START_LOG"
+    fi
     if [ "${TEST_START_MODE:-failure}" = failure ]; then
       echo 'intentional start failure' >&2
       exit 23
@@ -115,7 +118,7 @@ perl -MJSON::PP -e '
 
 PATH="$TMP/bin:$PATH" DARWIN_VZ_NIX_BENCHMARK_ALLOW_VM=1 \
   DARWIN_VZ_NIX_BENCHMARK_TMPDIR="$TMP" TEST_START_MODE=success TEST_LOCK_RELEASE_DELAY=1 \
-  TEST_SSH_COMMAND_LOG="$TMP/ssh-commands" \
+  TEST_SSH_COMMAND_LOG="$TMP/ssh-commands" TEST_START_LOG="$TMP/starts" \
   "$ROOT/scripts/benchmark.sh" collect --execute-vm --iterations 2 --timeout 3 \
   --cli "$TMP/bin/darwin-vz-nix" --kernel "$TMP/kernel" --initrd "$TMP/initrd" \
   --system "$TMP/system" --output "$TMP/success.json" >/dev/null 2>"$TMP/success-stderr"
@@ -123,13 +126,25 @@ perl -MJSON::PP -e '
   local $/; my $result = decode_json(<STDIN>);
   die "cold boot failed\n" unless $result->{summary}{cold_boot}{failures} == 0;
   die "warm boot failed\n" unless $result->{summary}{warm_boot}{failures} == 0;
+  die "workload failed\n" unless $result->{summary}{build_workload}{failures} == 0;
+  die "wrong workload label\n" unless $result->{metadata}{workload_label} eq "offline_nix_derivation_rebuild";
 ' < "$TMP/success.json" || {
   perl -ne 'print' "$TMP/success-stderr" >&2
   exit 1
 }
-perl -0777 -ne 'exit(index($_, "1\tsh -lc '\''nix build --no-link /run/current-system'\''") >= 0 ? 0 : 1)' \
-  "$TMP/ssh-commands" || {
-  echo 'default workload does not build the current guest system' >&2
+perl -F'\t' -lane '
+  next unless $F[1] =~ /^sh -lc /;
+  die "workload was not passed as one remote argument\n" unless $F[0] == 1;
+  die "workload is not a forced rebuild\n" unless $F[1] =~ /nix build --no-link --rebuild --expr/;
+  die "workload is not the fixed offline derivation\n" unless $F[1] =~ /builtins\.derivation/ && $F[1] =~ /aarch64-linux/;
+  $count++;
+  END { die "expected one workload per iteration (got " . (0 + $count) . ")\n" unless $count == 2 }
+' "$TMP/ssh-commands" || {
+  echo 'default workload invocation is not isolated and reproducible' >&2
+  exit 1
+}
+test "$(perl -lne '$count++; END { print 0 + $count }' "$TMP/starts")" = 4 || {
+  echo 'benchmark did not perform exactly one cold and one warm start per iteration' >&2
   exit 1
 }
 
@@ -150,6 +165,10 @@ CUSTOM_WORKLOAD=$custom_workload perl -F'\t' -lane '
   $matched = 1;
   END { die "workload invocation missing\n" unless $matched }
 ' "$TMP/custom-ssh-command"
+perl -MJSON::PP -e '
+  local $/; my $result = decode_json(<STDIN>);
+  die "custom workload label changed\n" unless $result->{metadata}{workload_label} eq "custom_guest_command";
+' < "$TMP/custom-workload.json"
 
 PATH="$TMP/bin:$PATH" DARWIN_VZ_NIX_BENCHMARK_ALLOW_VM=1 \
   DARWIN_VZ_NIX_BENCHMARK_TMPDIR="$TMP" TEST_START_MODE=success TEST_WORKLOAD_MODE=failure \

@@ -12,7 +12,7 @@ Metrics are defined as follows:
 - `warm_boot`: CLI launch to successful SSH using the disk left by the cold boot and graceful shutdown.
 - `ssh_ready`: the cold-boot interval until `darwin-vz-nix ssh ... true` succeeds.
 - `shutdown`: graceful `stop` invocation through return of the foreground `start` process.
-- `build_workload`: a successful representative `nix build --no-link nixpkgs#hello` inside the guest.
+- `build_workload`: a successful offline rebuild of a fixed, minimal derivation inside the guest.
 
 ## Collection
 
@@ -30,7 +30,7 @@ DARWIN_VZ_NIX_BENCHMARK_ALLOW_VM=1 scripts/benchmark.sh collect \
   --output candidate.json
 ```
 
-The default workload is representative rather than exhaustive. Override it with `--workload-command`, but treat the command as potentially sensitive: it is passed to the guest and deliberately represented only as `representative_nix_build` in JSON.
+The default workload uses `--rebuild` on a fixed derivation with `/bin/sh`, so every sample performs a build without network or substituter availability affecting the result. Override it with `--workload-command`, but treat the command as potentially sensitive: it is passed to the guest and deliberately represented only as `custom_guest_command` in JSON.
 
 ## Baseline comparison
 
