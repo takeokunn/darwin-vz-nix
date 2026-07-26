@@ -35,7 +35,8 @@ KERNEL=''
 INITRD=''
 SYSTEM=''
 EXECUTE=0
-WORKLOAD='nix build --no-link /run/current-system'
+WORKLOAD=''
+WORKLOAD_LABEL=offline_unique_derivation_build
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --execute-vm) EXECUTE=1; shift ;;
@@ -45,7 +46,7 @@ while [ "$#" -gt 0 ]; do
       case "$key" in
         --output) OUTPUT=$value ;; --iterations) ITERATIONS=$value ;; --cli) CLI=$value ;;
         --cores) CORES=$value ;; --memory) MEMORY=$value ;; --disk-size) DISK_SIZE=$value ;;
-        --timeout) TIMEOUT=$value ;; --workload-command) WORKLOAD=$value ;; --kernel) KERNEL=$value ;;
+        --timeout) TIMEOUT=$value ;; --workload-command) WORKLOAD=$value; WORKLOAD_LABEL=custom_guest_command ;; --kernel) KERNEL=$value ;;
         --initrd) INITRD=$value ;; --system) SYSTEM=$value ;;
       esac ;;
     --help|-h) usage; exit 0 ;;
@@ -85,6 +86,7 @@ if [ -n "$DEFAULT_TMP_BASE" ]; then
   chmod 700 "$DEFAULT_TMP_ROOT" "$TMP_BASE"
 fi
 TMP_ROOT=$(mktemp -d "$TMP_BASE/darwin-vz-nix-benchmark.XXXXXX")
+RUN_ID=${TMP_ROOT##*.}
 STATE_DIR=$TMP_ROOT/state
 SAMPLES=$TMP_ROOT/samples.tsv
 METADATA=$TMP_ROOT/metadata.json
@@ -215,15 +217,14 @@ HARDWARE_MODEL=$(sysctl -n hw.model)
 perl -MJSON::PP -e '
   print JSON::PP->new->canonical->encode({
     iterations=>0+$ARGV[0], cores=>0+$ARGV[1], memory_mb=>0+$ARGV[2], disk_size=>$ARGV[3],
-    timeout_seconds=>0+$ARGV[4], workload_label=>"representative_nix_build",
+    timeout_seconds=>0+$ARGV[4], workload_label=>$ARGV[12],
     host_arch=>$ARGV[5], macos_version=>$ARGV[6], revision=>$ARGV[7], cli_sha256=>$ARGV[8],
     guest_artifact_sha256=>$ARGV[9], nix_version=>$ARGV[10], hardware_model=>$ARGV[11],
     cold_definition=>"fresh harness-owned state directory",
     warm_definition=>"same persistent disk after graceful shutdown",
-  })' "$ITERATIONS" "$CORES" "$MEMORY" "$DISK_SIZE" "$TIMEOUT" "$(uname -m)" "$MACOS_VERSION" "$REVISION" "$CLI_SHA256" "$GUEST_ARTIFACT_SHA256" "$NIX_VERSION" "$HARDWARE_MODEL" > "$METADATA"
+  })' "$ITERATIONS" "$CORES" "$MEMORY" "$DISK_SIZE" "$TIMEOUT" "$(uname -m)" "$MACOS_VERSION" "$REVISION" "$CLI_SHA256" "$GUEST_ARTIFACT_SHA256" "$NIX_VERSION" "$HARDWARE_MODEL" "$WORKLOAD_LABEL" > "$METADATA"
 
 i=1
-REMOTE_COMMAND="sh -lc $(shell_quote "$WORKLOAD")"
 while [ "$i" -le "$ITERATIONS" ]; do
   rm -rf "$STATE_DIR"
   begin=$(now); start_vm
@@ -232,8 +233,14 @@ while [ "$i" -le "$ITERATIONS" ]; do
   record "$i" ssh_ready "$(elapsed "$begin" "$ready")" "$ok" "$([ "$ok" -eq 1 ] && printf success || printf failure)"
   cold_ok=$ok
   if [ "$cold_ok" -eq 1 ] && [ "$i" -le "$WORKLOAD_ITERATIONS" ]; then
+    if [ "$WORKLOAD_LABEL" = offline_unique_derivation_build ]; then
+      iteration_workload="nix build --offline --no-link --expr 'builtins.derivation { name = \"darwin-vz-nix-benchmark-$RUN_ID-$i\"; system = \"aarch64-linux\"; builder = \"/bin/sh\"; args = [ \"-c\" \"printf benchmark > \$out\" ]; }'"
+    else
+      iteration_workload=$WORKLOAD
+    fi
+    remote_command="sh -lc $(shell_quote "$iteration_workload")"
     begin=$(now)
-    if "$CLI" ssh --state-dir "$STATE_DIR" -- "$REMOTE_COMMAND" >"$WORKLOAD_LOG" 2>&1; then
+    if "$CLI" ssh --state-dir "$STATE_DIR" -- "$remote_command" >"$WORKLOAD_LOG" 2>&1; then
       ok=1
     else
       ok=0

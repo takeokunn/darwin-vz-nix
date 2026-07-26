@@ -139,24 +139,36 @@ struct StartCommandTests {
     }
 
     @Test
-    func stateDirectoryLockIsExclusive() {
+    func stateDirectoryLockIsExclusive() throws {
         let stateDirectory = TestHelpers.createTempDirectory()
         defer { TestHelpers.removeTempItem(at: stateDirectory) }
 
         // First acquisition succeeds and holds the lock.
-        let first = Start.tryLockStateDirectory(stateDirectory)
+        let first = try Start.tryLockStateDirectory(stateDirectory)
         #expect(first >= 0)
 
         // A second, concurrent acquisition on the same state directory must fail
         // (this is what stops two `start`s from opening disk.img read-write).
-        let second = Start.tryLockStateDirectory(stateDirectory)
+        let second = try Start.tryLockStateDirectory(stateDirectory)
         #expect(second < 0)
 
         // Releasing the first lets a later acquisition succeed again.
         close(first)
-        let third = Start.tryLockStateDirectory(stateDirectory)
+        let third = try Start.tryLockStateDirectory(stateDirectory)
         #expect(third >= 0)
         close(third)
+    }
+
+    @Test
+    func invalidStateDirectoryLockErrorIsNotReportedAsContention() throws {
+        let stateDirectory = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: stateDirectory) }
+        try FileManager.default.removeItem(at: stateDirectory)
+        try Data().write(to: stateDirectory)
+
+        #expect(throws: SecureHostStateError.self) {
+            _ = try Start.tryLockStateDirectory(stateDirectory)
+        }
     }
 
     @Test
