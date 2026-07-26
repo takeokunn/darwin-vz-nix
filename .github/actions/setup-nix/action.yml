@@ -4,10 +4,15 @@ inputs:
   cachix-auth-token:
     required: false
     default: ""
+  use-existing-nix:
+    description: Use the runner's existing Nix without installing the Cachix CLI
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:
     - uses: cachix/install-nix-action@c134e4c9e34bac6cab09cf239815f9339aaaf84e # v31.5.1
+      if: inputs.use-existing-nix != 'true'
       with:
         nix_path: nixpkgs=channel:nixos-unstable
         # Do NOT set accept-flake-config = true here. CI runs on pull_request and
@@ -19,18 +24,31 @@ runs:
         extra_nix_config: |
           substituters = https://cache.nixos.org https://takeokunn-darwin-vz-nix.cachix.org
           trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= takeokunn-darwin-vz-nix.cachix.org-1:eqv/henpzh2D5PjoV9YNCGGQJ4jUHW4oeFoqcooQX3g=
+    - name: Configure existing Nix for Cachix pulls
+      if: inputs.use-existing-nix == 'true'
+      shell: bash
+      run: |
+        command -v nix >/dev/null
+        {
+          echo 'NIX_CONFIG<<EOF'
+          echo 'substituters = https://cache.nixos.org https://takeokunn-darwin-vz-nix.cachix.org'
+          echo 'trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= takeokunn-darwin-vz-nix.cachix.org-1:eqv/henpzh2D5PjoV9YNCGGQJ4jUHW4oeFoqcooQX3g='
+          echo EOF
+        } >> "$GITHUB_ENV"
+    # Self-hosted smoke jobs only consume the public cache. Skipping cachix-action
+    # avoids its legacy nix-env installer and keeps the auth token off those runners.
     # skipPush on both cachix-action steps: cachix-action otherwise auto-pushes
     # every store path built during the job in its post-step whenever an authToken
     # is present. Same-repo (non-fork) PRs DO receive secrets, so that would
     # publish derivations built from unreviewed PR code into the production cache.
     # Publishing happens only via the explicit, branch/tag-gated `cachix push` steps.
     - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
-      if: inputs.cachix-auth-token == ''
+      if: inputs.use-existing-nix != 'true' && inputs.cachix-auth-token == ''
       with:
         name: takeokunn-darwin-vz-nix
         skipPush: true
     - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
-      if: inputs.cachix-auth-token != ''
+      if: inputs.use-existing-nix != 'true' && inputs.cachix-auth-token != ''
       with:
         name: takeokunn-darwin-vz-nix
         authToken: "${{ inputs.cachix-auth-token }}"

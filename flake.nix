@@ -835,8 +835,14 @@
               grep -F 'DARWIN_VZ_NIX_SMOKE_STATE_DIR: ''${{ github.workspace }}/ci-artifacts/smoke-state' .github/workflows/release.yml >/dev/null
               grep -F 'DARWIN_VZ_NIX_SMOKE_KEEP_STATE: "1"' .github/workflows/release.yml >/dev/null
               grep -F "DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS: never" .github/workflows/release.yml >/dev/null
-              grep -E "if: inputs[.]cachix-auth-token == [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
-              grep -E "if: inputs[.]cachix-auth-token != [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
+              grep -F "if: inputs.use-existing-nix != 'true'" .github/actions/setup-nix/action.yml >/dev/null
+              grep -F "if: inputs.use-existing-nix == 'true'" .github/actions/setup-nix/action.yml >/dev/null
+              grep -E "if: inputs[.]use-existing-nix != 'true' && inputs[.]cachix-auth-token == [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
+              grep -E "if: inputs[.]use-existing-nix != 'true' && inputs[.]cachix-auth-token != [']{2}$" .github/actions/setup-nix/action.yml >/dev/null
+              grep -F "name: Configure existing Nix for Cachix pulls" .github/actions/setup-nix/action.yml >/dev/null
+              grep -F 'NIX_CONFIG<<EOF' .github/actions/setup-nix/action.yml >/dev/null
+              test "$(grep -cF "use-existing-nix: true" .github/workflows/vm-smoke.yml)" -eq 1
+              test "$(grep -cF "use-existing-nix: true" .github/workflows/release.yml)" -eq 1
               grep -F "Verify release tag matches package version" .github/workflows/release.yml >/dev/null
               grep -F "nix eval --raw .#packages.aarch64-darwin.darwin-vz-nix.version" .github/workflows/release.yml >/dev/null
               grep -F 'expected_tag="v''${package_version}"' .github/workflows/release.yml >/dev/null
