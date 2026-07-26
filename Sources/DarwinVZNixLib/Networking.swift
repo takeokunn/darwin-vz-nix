@@ -230,6 +230,7 @@ struct NetworkManager {
             if let leaseCandidate = Self.selectVerifiedLeaseCandidate(
                 cachedLeaseCandidates,
                 expectedMAC: mac,
+                shouldContinue: { Date() < deadline },
                 probe: { Self.isTCPPortOpen(ip: $0, port: 22) },
                 verifyARP: { Self.verifyIPViaARP(ip: $0, expectedMAC: $1) }
             ) {
@@ -296,11 +297,14 @@ struct NetworkManager {
             }
         }
 
-        return candidates.sorted {
+        let sortedCandidates = candidates.sorted {
             if $0.expiration != $1.expiration { return $0.expiration > $1.expiration }
             if $0.sourceOrder != $1.sourceOrder { return $0.sourceOrder > $1.sourceOrder }
             return $0.ip < $1.ip
         }
+
+        var seenIPs = Set<String>()
+        return sortedCandidates.filter { seenIPs.insert($0.ip).inserted }
     }
 
     /// Probe first to actively populate the host ARP cache, then accept only a
@@ -308,10 +312,12 @@ struct NetworkManager {
     static func selectVerifiedLeaseCandidate(
         _ candidates: [LeaseCandidate],
         expectedMAC: String,
+        shouldContinue: () -> Bool = { true },
         probe: (String) -> Bool,
         verifyARP: (String, String) -> Bool
     ) -> String? {
         for candidate in candidates where isValidIPv4(candidate.ip) {
+            guard shouldContinue() else { return nil }
             guard probe(candidate.ip) else { continue }
             if verifyARP(candidate.ip, expectedMAC) {
                 return candidate.ip

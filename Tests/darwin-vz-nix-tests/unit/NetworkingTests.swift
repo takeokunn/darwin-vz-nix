@@ -92,6 +92,27 @@ struct NetworkingTests {
     }
 
     @Test
+    func parseLeaseCandidatesDeduplicatesIPUsingNewestLease() {
+        let content = multipleLeases + """
+
+        {
+            name=darwin-vz-guest
+            ip_address=192.168.64.3
+            lease=0x0000000069FFFFFF
+        }
+        """
+
+        let candidates = NetworkManager.parseLeaseCandidates(
+            content,
+            hostname: "darwin-vz-guest",
+            unexpiredAt: 0
+        )
+
+        #expect(candidates.map(\.ip) == ["192.168.64.3", "192.168.64.2"])
+        #expect(candidates.first?.expiration == 0x0000_0000_69FF_FFFF)
+    }
+
+    @Test
     func verifiedLeaseCandidateProbesThenSelectsExpectedMAC() {
         let candidates = NetworkManager.parseLeaseCandidates(
             multipleLeases,
@@ -134,6 +155,26 @@ struct NetworkingTests {
         )
 
         #expect(selected == nil)
+    }
+
+    @Test
+    func verifiedLeaseCandidateStopsBeforeProbeWhenDeadlineExpires() {
+        let candidates = [NetworkManager.LeaseCandidate(ip: "192.168.64.2", expiration: 1, sourceOrder: 0)]
+        var didProbe = false
+
+        let selected = NetworkManager.selectVerifiedLeaseCandidate(
+            candidates,
+            expectedMAC: "02:da:72:56:00:01",
+            shouldContinue: { false },
+            probe: { _ in
+                didProbe = true
+                return true
+            },
+            verifyARP: { _, _ in true }
+        )
+
+        #expect(selected == nil)
+        #expect(!didProbe)
     }
 
     @Test
