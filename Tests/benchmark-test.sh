@@ -15,10 +15,16 @@ cat > "$TMP/bin/darwin-vz-nix" <<'EOF'
 command=$1
 shift
 state_dir=
+ssh_command=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --state-dir ] && [ "$#" -ge 2 ]; then
     state_dir=$2
     shift 2
+  elif [ "$1" = -- ]; then
+    shift
+    ssh_argument_count=$#
+    ssh_command=${1:-}
+    break
   else
     shift
   fi
@@ -30,14 +36,31 @@ case "$command" in
       exit 23
     fi
     mkdir -p "$state_dir"
-    printf '%s\n' "$$" > "$state_dir/start.pid"
-    : > "$state_dir/ready"
-    trap 'exit 0' TERM
-    while :; do sleep 1; done
+    exec perl -MFcntl=:flock -MTime::HiRes=sleep -e '
+      open my $lock, ">>", "$ARGV[0]/vm.lock" or die $!;
+      flock($lock, LOCK_EX | LOCK_NB) or die "overlapping VM start\n";
+      open my $pid, ">", "$ARGV[0]/start.pid" or die $!;
+      print {$pid} "$$\n"; close $pid;
+      open my $ready, ">", "$ARGV[0]/ready" or die $!; close $ready;
+      $SIG{TERM} = sub {
+        unlink "$ARGV[0]/ready";
+        sleep(0 + ($ENV{TEST_LOCK_RELEASE_DELAY} // 0));
+        exit 0;
+      };
+      sleep 1 while 1;
+    ' "$state_dir"
     ;;
   ssh)
-    [ -f "$state_dir/ready" ]
-    exit $?
+    [ -f "$state_dir/ready" ] || exit 1
+    if [ -n "${TEST_SSH_COMMAND_LOG:-}" ]; then
+      printf '%s\t%s\n' "$ssh_argument_count" "$ssh_command" >> "$TEST_SSH_COMMAND_LOG"
+    fi
+    if [ "${ssh_command#sh -lc }" != "$ssh_command" ] && \
+       [ "${TEST_WORKLOAD_MODE:-success}" = failure ]; then
+      printf 'private workload diagnostic\n' >&2
+      exit 42
+    fi
+    exit 0
     ;;
   stop)
     rm -f "$state_dir/ready"
@@ -91,12 +114,57 @@ perl -MJSON::PP -e '
 ' < "$TMP/failure.json"
 
 PATH="$TMP/bin:$PATH" DARWIN_VZ_NIX_BENCHMARK_ALLOW_VM=1 \
-  DARWIN_VZ_NIX_BENCHMARK_TMPDIR="$TMP" TEST_START_MODE=success \
-  "$ROOT/scripts/benchmark.sh" collect --execute-vm --iterations 1 --timeout 3 \
+  DARWIN_VZ_NIX_BENCHMARK_TMPDIR="$TMP" TEST_START_MODE=success TEST_LOCK_RELEASE_DELAY=1 \
+  TEST_SSH_COMMAND_LOG="$TMP/ssh-commands" \
+  "$ROOT/scripts/benchmark.sh" collect --execute-vm --iterations 2 --timeout 3 \
   --cli "$TMP/bin/darwin-vz-nix" --kernel "$TMP/kernel" --initrd "$TMP/initrd" \
   --system "$TMP/system" --output "$TMP/success.json" >/dev/null 2>"$TMP/success-stderr"
 perl -MJSON::PP -e '
   local $/; my $result = decode_json(<STDIN>);
   die "cold boot failed\n" unless $result->{summary}{cold_boot}{failures} == 0;
   die "warm boot failed\n" unless $result->{summary}{warm_boot}{failures} == 0;
-' < "$TMP/success.json"
+' < "$TMP/success.json" || {
+  perl -ne 'print' "$TMP/success-stderr" >&2
+  exit 1
+}
+perl -0777 -ne 'exit(index($_, "1\tsh -lc '\''nix build --no-link /run/current-system'\''") >= 0 ? 0 : 1)' \
+  "$TMP/ssh-commands" || {
+  echo 'default workload does not build the current guest system' >&2
+  exit 1
+}
+
+custom_workload='printf "%s\\n" "apostrophe:'\'' space; dollar:$HOME" && true'
+PATH="$TMP/bin:$PATH" DARWIN_VZ_NIX_BENCHMARK_ALLOW_VM=1 \
+  DARWIN_VZ_NIX_BENCHMARK_TMPDIR="$TMP" TEST_START_MODE=success \
+  TEST_SSH_COMMAND_LOG="$TMP/custom-ssh-command" \
+  "$ROOT/scripts/benchmark.sh" collect --execute-vm --iterations 1 --timeout 3 \
+  --cli "$TMP/bin/darwin-vz-nix" --kernel "$TMP/kernel" --initrd "$TMP/initrd" \
+  --system "$TMP/system" --workload-command "$custom_workload" \
+  --output "$TMP/custom-workload.json" >/dev/null 2>"$TMP/custom-workload-stderr"
+CUSTOM_WORKLOAD=$custom_workload perl -F'\t' -lane '
+  next unless $F[1] =~ /^sh -lc /;
+  die "workload was not passed as one argument\n" unless $F[0] == 1;
+  my $expected = $ENV{CUSTOM_WORKLOAD};
+  $expected =~ s/'\''/'\''"'\''"'\''/g;
+  die "workload quoting changed\n" unless $F[1] eq "sh -lc '\''$expected'\''";
+  $matched = 1;
+  END { die "workload invocation missing\n" unless $matched }
+' "$TMP/custom-ssh-command"
+
+PATH="$TMP/bin:$PATH" DARWIN_VZ_NIX_BENCHMARK_ALLOW_VM=1 \
+  DARWIN_VZ_NIX_BENCHMARK_TMPDIR="$TMP" TEST_START_MODE=success TEST_WORKLOAD_MODE=failure \
+  "$ROOT/scripts/benchmark.sh" collect --execute-vm --iterations 1 --timeout 3 \
+  --cli "$TMP/bin/darwin-vz-nix" --kernel "$TMP/kernel" --initrd "$TMP/initrd" \
+  --system "$TMP/system" --output "$TMP/workload-failure.json" \
+  >"$TMP/workload-stdout" 2>"$TMP/workload-stderr"
+test -f "$TMP/workload-failure.json.diagnostics/workload-iteration-1.log"
+test "$(stat -f '%Lp' "$TMP/workload-failure.json.diagnostics/workload-iteration-1.log")" = 600
+perl -0777 -ne 'exit(index($_, "private workload diagnostic") < 0 ? 0 : 1)' "$TMP/workload-stderr" || {
+  echo 'workload diagnostic leaked to stderr' >&2
+  exit 1
+}
+perl -0777 -ne 'exit(index($_, "private workload diagnostic") >= 0 ? 0 : 1)' \
+  "$TMP/workload-failure.json.diagnostics/workload-iteration-1.log" || {
+  echo 'private workload diagnostic was not retained' >&2
+  exit 1
+}

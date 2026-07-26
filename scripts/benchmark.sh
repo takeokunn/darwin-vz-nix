@@ -35,7 +35,7 @@ KERNEL=''
 INITRD=''
 SYSTEM=''
 EXECUTE=0
-WORKLOAD='nix build --no-link nixpkgs#hello'
+WORKLOAD='nix build --no-link /run/current-system'
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --execute-vm) EXECUTE=1; shift ;;
@@ -90,6 +90,7 @@ SAMPLES=$TMP_ROOT/samples.tsv
 METADATA=$TMP_ROOT/metadata.json
 START_LOG=$TMP_ROOT/start.log
 START_STATUS=$TMP_ROOT/start.status
+WORKLOAD_LOG=$TMP_ROOT/workload.log
 START_PID=
 STOP_PID=
 cleanup() {
@@ -103,6 +104,11 @@ trap cleanup EXIT HUP INT TERM
 now() { perl -MTime::HiRes=time -e 'printf "%.6f\n", time'; }
 elapsed() { perl -e 'printf "%.6f\n", $ARGV[1] - $ARGV[0]' "$1" "$2"; }
 record() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$SAMPLES"; }
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | perl -pe "s/'/'\"'\"'/g"
+  printf "'"
+}
 wait_pid_until() {
   wait_pid=$1 wait_limit=$2
   wait_deadline=$(perl -MTime::HiRes=time -e 'printf "%.6f\n", time + $ARGV[0]' "$wait_limit")
@@ -119,6 +125,20 @@ terminate_and_wait() {
     kill -KILL "$terminate_pid" 2>/dev/null || true
     wait "$terminate_pid" 2>/dev/null || true
   fi
+}
+wait_state_unlock() {
+  lock_path=$STATE_DIR/vm.lock
+  unlock_deadline=$(perl -MTime::HiRes=time -e 'printf "%.6f\n", time + $ARGV[0]' "$TIMEOUT")
+  while [ -e "$lock_path" ]; do
+    if perl -MFcntl=:flock -e '
+      open my $fh, "+<", $ARGV[0] or exit 1;
+      exit(flock($fh, LOCK_EX | LOCK_NB) ? 0 : 1);
+    ' "$lock_path"; then
+      return 0
+    fi
+    perl -MTime::HiRes=time -e 'exit(time < $ARGV[0] ? 0 : 1)' "$unlock_deadline" || return 1
+    sleep 1
+  done
 }
 wait_ssh() {
   deadline=$(perl -MTime::HiRes=time -e 'printf "%.6f\n", time + $ARGV[0]' "$TIMEOUT")
@@ -169,7 +189,21 @@ stop_vm() {
     fi
   fi
   START_PID=
+  if ! wait_state_unlock; then
+    echo "VM state lock was not released within ${TIMEOUT}s" >&2
+    result=1
+  fi
   return "$result"
+}
+
+preserve_workload_diagnostic() {
+  diagnostic_dir=$OUTPUT.diagnostics
+  mkdir -p "$diagnostic_dir"
+  chmod 700 "$diagnostic_dir"
+  diagnostic_file=$diagnostic_dir/workload-iteration-$i.log
+  cp "$WORKLOAD_LOG" "$diagnostic_file"
+  chmod 600 "$diagnostic_file"
+  echo "workload failed; private diagnostic saved to $diagnostic_file" >&2
 }
 
 REVISION=$(git -C "$SCRIPT_DIR/.." rev-parse HEAD 2>/dev/null || printf unknown)
@@ -189,6 +223,7 @@ perl -MJSON::PP -e '
   })' "$ITERATIONS" "$CORES" "$MEMORY" "$DISK_SIZE" "$TIMEOUT" "$(uname -m)" "$MACOS_VERSION" "$REVISION" "$CLI_SHA256" "$GUEST_ARTIFACT_SHA256" "$NIX_VERSION" "$HARDWARE_MODEL" > "$METADATA"
 
 i=1
+REMOTE_COMMAND="sh -lc $(shell_quote "$WORKLOAD")"
 while [ "$i" -le "$ITERATIONS" ]; do
   rm -rf "$STATE_DIR"
   begin=$(now); start_vm
@@ -198,18 +233,32 @@ while [ "$i" -le "$ITERATIONS" ]; do
   cold_ok=$ok
   if [ "$cold_ok" -eq 1 ] && [ "$i" -le "$WORKLOAD_ITERATIONS" ]; then
     begin=$(now)
-    if "$CLI" ssh --state-dir "$STATE_DIR" -- sh -lc "$WORKLOAD" >/dev/null 2>&1; then ok=1; else ok=0; fi
+    if "$CLI" ssh --state-dir "$STATE_DIR" -- "$REMOTE_COMMAND" >"$WORKLOAD_LOG" 2>&1; then
+      ok=1
+    else
+      ok=0
+      preserve_workload_diagnostic
+    fi
     finish=$(now); record "$i" build_workload "$(elapsed "$begin" "$finish")" "$ok" "$([ "$ok" -eq 1 ] && printf success || printf failure)"
   elif [ "$i" -le "$WORKLOAD_ITERATIONS" ]; then record "$i" build_workload 0 0 prerequisite_failure; fi
   begin=$(now); if stop_vm; then ok=1; else ok=0; fi; finish=$(now)
   record "$i" shutdown "$(elapsed "$begin" "$finish")" "$ok" "$([ "$ok" -eq 1 ] && printf success || printf failure)"
   shutdown_ok=$ok
 
+  if [ "$shutdown_ok" -ne 1 ]; then
+    record "$i" warm_boot 0 0 prerequisite_failure
+    echo "benchmark stopped before iteration $((i + 1)): VM shutdown did not release its state lock" >&2
+    break
+  fi
+
   if [ "$cold_ok" -eq 1 ] && [ "$shutdown_ok" -eq 1 ]; then
     begin=$(now); start_vm
     if wait_ssh; then ok=1; else ok=0; fi
     finish=$(now); record "$i" warm_boot "$(elapsed "$begin" "$finish")" "$ok" "$([ "$ok" -eq 1 ] && printf success || printf failure)"
-    stop_vm || true
+    if ! stop_vm; then
+      echo "benchmark stopped before iteration $((i + 1)): warm VM did not release its state lock" >&2
+      break
+    fi
   else
     record "$i" warm_boot 0 0 prerequisite_failure
   fi
