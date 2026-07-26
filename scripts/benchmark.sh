@@ -89,6 +89,7 @@ STATE_DIR=$TMP_ROOT/state
 SAMPLES=$TMP_ROOT/samples.tsv
 METADATA=$TMP_ROOT/metadata.json
 START_LOG=$TMP_ROOT/start.log
+START_STATUS=$TMP_ROOT/start.status
 START_PID=
 STOP_PID=
 cleanup() {
@@ -123,14 +124,35 @@ wait_ssh() {
   deadline=$(perl -MTime::HiRes=time -e 'printf "%.6f\n", time + $ARGV[0]' "$TIMEOUT")
   while :; do
     if "$CLI" ssh --state-dir "$STATE_DIR" -- -o BatchMode=yes -- true >/dev/null 2>&1; then return 0; fi
+    if [ -f "$START_STATUS" ]; then
+      wait "$START_PID" 2>/dev/null || true
+      START_PID=
+      echo 'VM start process exited before SSH became ready; start log follows:' >&2
+      if [ -s "$START_LOG" ]; then
+        cat "$START_LOG" >&2
+      else
+        echo '(start log is empty)' >&2
+      fi
+      return 1
+    fi
     perl -MTime::HiRes=time -e 'exit(time < $ARGV[0] ? 0 : 1)' "$deadline" || return 1
     sleep 1
   done
 }
 start_vm() {
   : > "$START_LOG"
-  "$CLI" start --kernel "$KERNEL" --initrd "$INITRD" --system "$SYSTEM" --state-dir "$STATE_DIR" \
-    --cores "$CORES" --memory "$MEMORY" --disk-size "$DISK_SIZE" >"$START_LOG" 2>&1 &
+  rm -f "$START_STATUS"
+  (
+    if "$CLI" start --kernel "$KERNEL" --initrd "$INITRD" --system "$SYSTEM" --state-dir "$STATE_DIR" \
+      --cores "$CORES" --memory "$MEMORY" --disk-size "$DISK_SIZE" >"$START_LOG" 2>&1; then
+      start_result=0
+    else
+      start_result=$?
+    fi
+    printf '%s\n' "$start_result" > "$START_STATUS.tmp"
+    mv "$START_STATUS.tmp" "$START_STATUS"
+    exit "$start_result"
+  ) &
   START_PID=$!
 }
 stop_vm() {
@@ -138,9 +160,13 @@ stop_vm() {
   STOP_PID=$!
   if wait_pid_until "$STOP_PID" "$TIMEOUT"; then result=0; else result=1; terminate_and_wait "$STOP_PID" 5; fi
   STOP_PID=
-  if [ -n "$START_PID" ] && ! wait_pid_until "$START_PID" "$TIMEOUT"; then
-    result=1
-    terminate_and_wait "$START_PID" 5
+  if [ -n "$START_PID" ]; then
+    if [ -f "$START_STATUS" ]; then
+      wait "$START_PID" 2>/dev/null || result=1
+    elif ! wait_pid_until "$START_PID" "$TIMEOUT"; then
+      result=1
+      terminate_and_wait "$START_PID" 5
+    fi
   fi
   START_PID=
   return "$result"
