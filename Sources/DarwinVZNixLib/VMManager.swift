@@ -6,6 +6,51 @@ struct VMProcessRecord: Codable, Equatable {
     let executablePath: String?
     let stateDirectory: String
     let startedAt: Date
+    let processStartTimeMicroseconds: UInt64?
+    let launchdManaged: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case pid
+        case executablePath
+        case stateDirectory
+        case startedAt
+        case processStartTimeMicroseconds
+        case launchdManaged
+    }
+
+    init(
+        pid: Int32,
+        executablePath: String?,
+        stateDirectory: String,
+        startedAt: Date,
+        processStartTimeMicroseconds: UInt64? = nil,
+        launchdManaged: Bool = false
+    ) {
+        self.pid = pid
+        self.executablePath = executablePath
+        self.stateDirectory = stateDirectory
+        self.startedAt = startedAt
+        self.processStartTimeMicroseconds = processStartTimeMicroseconds
+        self.launchdManaged = launchdManaged
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        pid = try container.decode(Int32.self, forKey: .pid)
+        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
+        stateDirectory = try container.decode(String.self, forKey: .stateDirectory)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        processStartTimeMicroseconds = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .processStartTimeMicroseconds
+        )
+        launchdManaged = try container.decodeIfPresent(Bool.self, forKey: .launchdManaged) ?? false
+    }
+}
+
+struct VMProcessTerminationResult: Equatable {
+    let stopped: Bool
+    let usedSIGKILL: Bool
 }
 
 enum VMManagerError: LocalizedError {
@@ -231,7 +276,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         }
 
         try config.ensureStateDirectory()
-        pinArtifactsAgainstGC()
+        try pinArtifactsAgainstGC()
         try ensureDiskImage()
 
         let vmConfig = try createVMConfiguration()
@@ -369,11 +414,13 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     /// if the host garbage-collects a path the running guest depends on (e.g. the
     /// nix-daemon's libsqlite3), the guest faults mid-operation. Rooting the guest
     /// closure prevents the host from collecting it out from under the VM.
-    /// Best-effort: failures (e.g. nix-store unavailable) are non-fatal.
-    private func pinArtifactsAgainstGC() {
+    /// Existing roots are never removed before their replacements have been
+    /// realised and verified. A refresh failure is fatal unless a concurrent
+    /// updater has already installed a root for the required store path.
+    private func pinArtifactsAgainstGC() throws {
         let fm = FileManager.default
         let gcrootsDir = config.stateDirectory.appendingPathComponent("gcroots", isDirectory: true)
-        try? fm.createDirectory(at: gcrootsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: gcrootsDir, withIntermediateDirectories: true)
 
         var artifacts: [(String, URL)] = [
             ("kernel", config.kernelURL),
@@ -384,21 +431,93 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         }
 
         for (name, url) in artifacts {
-            guard let storePath = Self.enclosingStorePath(of: url) else { continue }
-            let rootLink = gcrootsDir.appendingPathComponent(name)
-            try? fm.removeItem(at: rootLink)
+            guard let storePath = Self.enclosingStorePath(of: url) else {
+                throw VMManagerError.startFailed("Artifact \(url.path) is not in /nix/store and cannot be GC-rooted.")
+            }
+            try Self.ensureGCRoot(named: name, storePath: storePath, in: gcrootsDir)
+        }
+    }
+
+    static func ensureGCRoot(
+        named name: String,
+        storePath: String,
+        in gcrootsDirectory: URL,
+        executableURL: URL = URL(fileURLWithPath: "/usr/bin/env"),
+        argumentPrefix: [String] = ["nix-store"],
+        timeout: TimeInterval = 30
+    ) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: gcrootsDirectory, withIntermediateDirectories: true)
+        let root = gcrootsDirectory.appendingPathComponent(name)
+        if gcRoot(root, pointsTo: storePath) { return }
+
+        let temporaryRoot = gcrootsDirectory.appendingPathComponent(".\(name).\(UUID().uuidString).tmp")
+        defer { try? fm.removeItem(at: temporaryRoot) }
+
+        do {
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["nix-store", "--add-root", rootLink.path, "--realise", storePath]
+            process.executableURL = executableURL
+            process.arguments = argumentPrefix + ["--add-root", temporaryRoot.path, "--realise", storePath]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                DaemonLogger.vm.warning("Could not create GC root for \(name): \(error.localizedDescription)")
+            try process.run()
+
+            let deadline = Date().addingTimeInterval(timeout)
+            while process.isRunning, Date() < deadline {
+                usleep(20000)
             }
+            if process.isRunning {
+                process.terminate()
+                let terminationDeadline = Date().addingTimeInterval(0.5)
+                while process.isRunning, Date() < terminationDeadline {
+                    usleep(20000)
+                }
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                process.waitUntilExit()
+                throw VMManagerError.startFailed("nix-store timed out while creating GC root \(name).")
+            }
+            guard process.terminationStatus == 0 else {
+                throw VMManagerError.startFailed(
+                    "nix-store exited with status \(process.terminationStatus) while creating GC root \(name)."
+                )
+            }
+            guard gcRoot(temporaryRoot, pointsTo: storePath) else {
+                throw VMManagerError.startFailed("nix-store created an invalid GC root for \(name).")
+            }
+
+            guard rename(temporaryRoot.path, root.path) == 0 else {
+                throw VMManagerError.startFailed(
+                    "Failed to replace GC root \(name): \(String(cString: strerror(errno)))"
+                )
+            }
+        } catch {
+            // Another process may have completed the same update while this
+            // process was realizing its temporary root. Only the required
+            // target is sufficient protection for the VM being started.
+            if gcRoot(root, pointsTo: storePath) {
+                DaemonLogger.vm.warning("GC root \(name) was installed concurrently: \(error.localizedDescription)")
+                return
+            }
+            throw error
         }
+    }
+
+    private static func itemExists(at url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil
+    }
+
+    private static func gcRoot(_ root: URL, pointsTo storePath: String) -> Bool {
+        let fm = FileManager.default
+        guard let destination = try? fm.destinationOfSymbolicLink(atPath: root.path) else {
+            return false
+        }
+        let destinationURL = destination.hasPrefix("/")
+            ? URL(fileURLWithPath: destination)
+            : root.deletingLastPathComponent().appendingPathComponent(destination)
+        guard itemExists(at: destinationURL) else { return false }
+        return canonicalPath(destinationURL) == canonicalPath(URL(fileURLWithPath: storePath))
     }
 
     /// Return the enclosing `/nix/store/<hash-name>` path for a file URL, or nil
@@ -495,11 +614,17 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
     }
 
     private func writePIDFile() throws {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        guard let processStartTime = Self.processStartTimeMicroseconds(for: pid) else {
+            throw VMManagerError.pidFileWriteFailed("Could not read the process start time from the Darwin kernel.")
+        }
         let record = VMProcessRecord(
-            pid: ProcessInfo.processInfo.processIdentifier,
+            pid: pid,
             executablePath: Self.currentExecutablePath(),
-            stateDirectory: config.stateDirectory.path,
-            startedAt: Date()
+            stateDirectory: Self.canonicalPath(config.stateDirectory),
+            startedAt: Date(),
+            processStartTimeMicroseconds: processStartTime,
+            launchdManaged: config.launchdManaged
         )
 
         do {
@@ -547,6 +672,11 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         guard let record = try? decoder.decode(VMProcessRecord.self, from: data), record.pid > 0 else {
             return nil
         }
+        guard Self.canonicalPath(URL(fileURLWithPath: record.stateDirectory))
+            == Self.canonicalPath(pidFileURL.deletingLastPathComponent())
+        else {
+            return nil
+        }
         return record
     }
 
@@ -591,45 +721,65 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         }
     }
 
-    static func processMatchesRecord(pid: pid_t, expectedExecutablePath: String?) -> Bool {
-        guard pid > 0 else {
+    static func processStartTimeMicroseconds(for pid: pid_t) -> UInt64? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let expectedSize = MemoryLayout<proc_bsdinfo>.size
+        let size = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(expectedSize))
+        guard size == Int32(expectedSize), info.pbi_start_tvsec >= 0, info.pbi_start_tvusec >= 0 else {
+            return nil
+        }
+        return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
+    }
+
+    static func canonicalPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    static func processMatchesRecord(_ record: VMProcessRecord, pidFileURL: URL) -> Bool {
+        guard record.pid > 0,
+              canonicalPath(URL(fileURLWithPath: record.stateDirectory))
+              == canonicalPath(pidFileURL.deletingLastPathComponent()),
+              let expectedExecutablePath = record.executablePath,
+              let expectedStartTime = record.processStartTimeMicroseconds,
+              let actualExecutablePath = executablePath(for: record.pid),
+              let actualStartTime = processStartTimeMicroseconds(for: record.pid)
+        else {
             return false
         }
-        guard let expectedExecutablePath else {
-            // Legacy PID file with no recorded executable path. Don't blindly trust
-            // the bare PID (it may have been recycled by an unrelated process):
-            // only match if the live process actually looks like darwin-vz-nix.
-            guard let actualExecutablePath = executablePath(for: pid) else {
-                return false
-            }
-            return actualExecutablePath.contains("darwin-vz-nix")
-        }
-        guard let actualExecutablePath = executablePath(for: pid) else {
-            return false
-        }
-        return actualExecutablePath == URL(fileURLWithPath: expectedExecutablePath).resolvingSymlinksInPath().path
+        return actualExecutablePath == canonicalPath(URL(fileURLWithPath: expectedExecutablePath))
+            && actualStartTime == expectedStartTime
     }
 
     @discardableResult
     static func terminateProcess(
         pid: pid_t,
         pidFileURL: URL,
-        force: Bool = false,
-        expectedExecutablePath: String? = nil
-    ) throws -> Bool {
+        force: Bool = false
+    ) throws -> VMProcessTerminationResult {
+        let observedGeneration = Status.pidFileGeneration(at: pidFileURL)
+        let cleanupObservedGeneration: () -> Void = {
+            _ = Status.cleanupStoppedRuntimeFiles(
+                in: pidFileURL.deletingLastPathComponent(),
+                observedGeneration: observedGeneration
+            )
+        }
         guard pid > 0 else {
-            try? FileManager.default.removeItem(at: pidFileURL)
+            cleanupObservedGeneration()
             throw VMManagerError.stopFailed("Invalid VM process PID \(pid). Stale PID file removed.")
         }
 
         guard isProcessRunning(pid: pid) else {
-            try? FileManager.default.removeItem(at: pidFileURL)
+            cleanupObservedGeneration()
             DaemonLogger.vm.info("PID \(pid) is no longer running. Stale PID file removed.")
-            return true
+            return VMProcessTerminationResult(stopped: true, usedSIGKILL: false)
         }
 
-        guard processMatchesRecord(pid: pid, expectedExecutablePath: expectedExecutablePath) else {
-            try? FileManager.default.removeItem(at: pidFileURL)
+        guard let initialRecord = readPIDRecord(from: pidFileURL),
+              initialRecord.pid == pid,
+              processMatchesRecord(initialRecord, pidFileURL: pidFileURL)
+        else {
+            cleanupObservedGeneration()
             throw VMManagerError.stopFailed(
                 "PID \(pid) no longer belongs to the recorded darwin-vz-nix process. Stale PID file removed."
             )
@@ -639,15 +789,27 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         let signalName = force ? "SIGKILL" : "SIGTERM"
         DaemonLogger.vm.info("Sending \(signalName) to VM process (PID: \(pid))...")
 
+        guard let signalRecord = readPIDRecord(from: pidFileURL),
+              signalRecord == initialRecord,
+              processMatchesRecord(signalRecord, pidFileURL: pidFileURL)
+        else {
+            cleanupObservedGeneration()
+            throw VMManagerError.stopFailed(
+                "PID \(pid) identity changed immediately before \(signalName). Stale PID file removed."
+            )
+        }
+
+        var usedSIGKILL = false
         guard kill(pid, stopSignal) == 0 else {
             if errno == ESRCH {
-                try? FileManager.default.removeItem(at: pidFileURL)
+                cleanupObservedGeneration()
                 DaemonLogger.vm.info("PID \(pid) is no longer running. Stale PID file removed.")
-                return true
+                return VMProcessTerminationResult(stopped: true, usedSIGKILL: false)
             }
             let err = String(cString: strerror(errno))
             throw VMManagerError.stopFailed("Failed to send \(signalName) to PID \(pid): \(err)")
         }
+        usedSIGKILL = stopSignal == SIGKILL
 
         DaemonLogger.vm.info("Signal sent. Waiting for VM to stop...")
 
@@ -660,8 +822,11 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
         }
 
         if !force, isProcessRunning(pid: pid) {
-            guard processMatchesRecord(pid: pid, expectedExecutablePath: expectedExecutablePath) else {
-                try? FileManager.default.removeItem(at: pidFileURL)
+            guard let fallbackRecord = readPIDRecord(from: pidFileURL),
+                  fallbackRecord == initialRecord,
+                  processMatchesRecord(fallbackRecord, pidFileURL: pidFileURL)
+            else {
+                cleanupObservedGeneration()
                 throw VMManagerError.stopFailed(
                     "PID \(pid) changed before SIGKILL fallback. Stale PID file removed."
                 )
@@ -669,6 +834,7 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
 
             DaemonLogger.vm.warning("Process did not stop after SIGTERM. Sending SIGKILL...")
             if kill(pid, SIGKILL) == 0 {
+                usedSIGKILL = true
                 var killWaited: UInt32 = 0
                 while isProcessRunning(pid: pid), killWaited < 2_000_000 {
                     usleep(pollInterval)
@@ -677,19 +843,22 @@ class VMManager: NSObject, VZVirtualMachineDelegate {
                 if !isProcessRunning(pid: pid) {
                     DaemonLogger.vm.info("VM force-stopped after SIGTERM timeout.")
                 }
+            } else if errno != ESRCH {
+                let err = String(cString: strerror(errno))
+                throw VMManagerError.stopFailed("Failed to send SIGKILL to PID \(pid): \(err)")
             }
         }
 
         let stopped = !isProcessRunning(pid: pid)
 
         if stopped {
-            try? FileManager.default.removeItem(at: pidFileURL)
+            cleanupObservedGeneration()
             DaemonLogger.vm.info("VM stopped.")
         } else {
             DaemonLogger.vm.error("Process \(pid) still running after SIGKILL.")
         }
 
-        return stopped
+        return VMProcessTerminationResult(stopped: stopped, usedSIGKILL: usedSIGKILL)
     }
 
     // MARK: - Console Output Sanitization

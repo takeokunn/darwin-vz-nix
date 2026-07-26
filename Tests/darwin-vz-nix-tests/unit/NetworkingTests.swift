@@ -34,7 +34,7 @@ struct NetworkingTests {
 
     @Test
     func parseLeaseContentMatchingHostname() {
-        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == "192.168.64.2")
     }
 
@@ -42,7 +42,7 @@ struct NetworkingTests {
 
     @Test
     func parseLeaseContentNonMatchingHostname() {
-        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "wrong-host", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "wrong-host", unexpiredAt: 0)
         #expect(ip == nil)
     }
 
@@ -54,21 +54,21 @@ struct NetworkingTests {
     @Test
     func parseLeaseContentHandlesCRLF() {
         let crlf = sampleLease.replacingOccurrences(of: "\n", with: "\r\n")
-        let ip = NetworkManager.parseLeaseContent(crlf, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(crlf, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == "192.168.64.2")
     }
 
-    // MARK: - parseLeaseContent notBefore filter
+    // MARK: - parseLeaseContent expiration filter
 
     @Test
-    func parseLeaseContentNotBeforeFilter() {
-        let ip = NetworkManager.parseLeaseContent(multipleLeases, hostname: "darwin-vz-guest", notBefore: 0x6700_0050)
+    func parseLeaseContentExpirationFilter() {
+        let ip = NetworkManager.parseLeaseContent(multipleLeases, hostname: "darwin-vz-guest", unexpiredAt: 0x6700_0050)
         #expect(ip == "192.168.64.3")
     }
 
     @Test
-    func parseLeaseContentNotBeforeFiltersAll() {
-        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "darwin-vz-guest", notBefore: 0xFFFF_FFFF)
+    func parseLeaseContentExpirationFiltersAll() {
+        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "darwin-vz-guest", unexpiredAt: 0xFFFF_FFFF)
         #expect(ip == nil)
     }
 
@@ -76,7 +76,7 @@ struct NetworkingTests {
 
     @Test
     func parseLeaseContentSelectsNewest() {
-        let ip = NetworkManager.parseLeaseContent(multipleLeases, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(multipleLeases, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == "192.168.64.3")
     }
 
@@ -94,7 +94,7 @@ struct NetworkingTests {
             lease=0x67000001
         }
         """
-        let ip = NetworkManager.parseLeaseContent(mixedLeases, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(mixedLeases, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == "192.168.64.2")
     }
 
@@ -102,14 +102,14 @@ struct NetworkingTests {
 
     @Test
     func parseLeaseContentEmpty() {
-        let ip = NetworkManager.parseLeaseContent("", hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent("", hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == nil)
     }
 
     @Test
     func parseLeaseContentMalformed() {
         let malformed = "this is not a lease file at all"
-        let ip = NetworkManager.parseLeaseContent(malformed, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(malformed, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == nil)
     }
 
@@ -284,9 +284,9 @@ struct NetworkingTests {
     // MARK: - parseLeaseContent — additional edge cases
 
     @Test
-    func parseLeaseContentNotBeforeEqual() {
-        // notBefore uses strict-greater-than comparison, so equal means no match
-        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "darwin-vz-guest", notBefore: 0x6700_0001)
+    func parseLeaseContentExpirationEqualIsExpired() {
+        // `lease` is the expiration instant, so equality is no longer valid.
+        let ip = NetworkManager.parseLeaseContent(sampleLease, hostname: "darwin-vz-guest", unexpiredAt: 0x6700_0001)
         #expect(ip == nil)
     }
 
@@ -304,7 +304,7 @@ struct NetworkingTests {
             lease=0x67000050
         }
         """
-        let ip = NetworkManager.parseLeaseContent(twoEqualLeases, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(twoEqualLeases, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == "192.168.64.99")
     }
 
@@ -316,7 +316,7 @@ struct NetworkingTests {
             lease=0x67000001
         }
         """
-        let ip = NetworkManager.parseLeaseContent(noIP, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(noIP, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == nil)
     }
 
@@ -328,8 +328,8 @@ struct NetworkingTests {
             ip_address=192.168.64.2
         }
         """
-        // lease=0 fails the `leaseTimestamp > notBefore` check when notBefore=0
-        let ip = NetworkManager.parseLeaseContent(noLease, hostname: "darwin-vz-guest", notBefore: 0)
+        // Missing lease means expiration zero, which is not valid at time zero.
+        let ip = NetworkManager.parseLeaseContent(noLease, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == nil)
     }
 
@@ -342,7 +342,7 @@ struct NetworkingTests {
               lease=0x67000001
         }
         """
-        let ip = NetworkManager.parseLeaseContent(indented, hostname: "darwin-vz-guest", notBefore: 0)
+        let ip = NetworkManager.parseLeaseContent(indented, hostname: "darwin-vz-guest", unexpiredAt: 0)
         #expect(ip == "192.168.64.2")
     }
 
@@ -380,6 +380,69 @@ struct NetworkingTests {
         #expect(!NetworkManager.isValidIPv4("192.168.64"))
         #expect(!NetworkManager.isValidIPv4("192.168.64.2 ")) // trailing space
         #expect(!NetworkManager.isValidIPv4("::1")) // IPv6 is not IPv4
+    }
+
+    // MARK: - known_hosts policy
+
+    @Test
+    func knownHostsEntryLookupIgnoresCommentsAndBlankLines() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let knownHostsURL = tempDir.appendingPathComponent("known_hosts")
+        try "\n# managed by darwin-vz-nix\n  # comment\n".write(
+            to: knownHostsURL,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(!NetworkManager.knownHostsContainsEntry(host: "darwin-vz-nix-state", at: knownHostsURL))
+    }
+
+    @Test
+    func knownHostsEntryLookupRejectsUnrelatedLegacyIPPin() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let knownHostsURL = tempDir.appendingPathComponent("known_hosts")
+        try "192.168.64.2 ssh-ed25519 key\n".write(
+            to: knownHostsURL,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(!NetworkManager.knownHostsContainsEntry(host: "darwin-vz-nix-state", at: knownHostsURL))
+    }
+
+    @Test
+    func sshArgumentsPinStableAliasAcrossIPAddressChanges() throws {
+        let tempDir = TestHelpers.createTempDirectory()
+        defer { TestHelpers.removeTempItem(at: tempDir) }
+
+        let manager = NetworkManager(stateDirectory: tempDir)
+        try manager.ensureSSHKeys()
+        try manager.writeGuestIP("192.168.64.2")
+
+        let firstArguments = try manager.sshArguments()
+        #expect(firstArguments.contains("HostKeyAlias=darwin-vz-nix-state"))
+        #expect(firstArguments.contains("StrictHostKeyChecking=accept-new"))
+
+        let knownHostsURL = manager.stateKnownHostsURL()
+        try FileManager.default.createDirectory(
+            at: knownHostsURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "darwin-vz-nix-state ssh-ed25519 pinned-key\n".write(
+            to: knownHostsURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        try manager.writeGuestIP("192.168.64.99")
+
+        let restartedArguments = try manager.sshArguments()
+        #expect(restartedArguments.contains("HostKeyAlias=darwin-vz-nix-state"))
+        #expect(restartedArguments.contains("StrictHostKeyChecking=yes"))
+        #expect(restartedArguments.contains("builder@192.168.64.99"))
     }
 
     // MARK: - Per-instance MAC derivation

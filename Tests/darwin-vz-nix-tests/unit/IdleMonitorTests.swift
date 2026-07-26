@@ -113,4 +113,25 @@ struct IdleMonitorTests {
         // run under load) must never let the VM be judged idle mid-build.
         #expect(IdleMonitor.shouldCountAsActivity(.unknown))
     }
+
+    @Test
+    func lsofExitStatusClassificationIsFailSafe() {
+        #expect(IdleMonitor.classify(terminationStatus: 0, timedOut: false) == .active)
+        #expect(IdleMonitor.classify(terminationStatus: 1, timedOut: false) == .idle)
+        #expect(IdleMonitor.classify(terminationStatus: 2, timedOut: false) == .unknown)
+        #expect(IdleMonitor.classify(terminationStatus: 0, timedOut: true) == .unknown)
+    }
+
+    @Test
+    func adaptivePollingReducesIdleProbesWithoutOvershootingTimeout() {
+        #expect(IdleMonitor.nextPollInterval(
+            probe: .idle, consecutiveIdleSamples: 2, remainingIdleTime: 300
+        ) == 60)
+        #expect(IdleMonitor.nextPollInterval(
+            probe: .active, consecutiveIdleSamples: 0, remainingIdleTime: 300
+        ) == 30)
+        #expect(IdleMonitor.nextPollInterval(
+            probe: .idle, consecutiveIdleSamples: 3, remainingIdleTime: 7
+        ) == 7)
+    }
 }

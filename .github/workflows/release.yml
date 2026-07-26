@@ -65,16 +65,11 @@ jobs:
             ci-artifacts/runtime/result-system \
             ci-artifacts/runtime/result-guest-artifacts
 
-  # Dormant release gate. Off by default so releases publish unchanged; set the
-  # repo variable ENABLE_VM_SMOKE_GATE=true once a self-hosted Apple Silicon
-  # runner exists to require a live VM boot before publishing. The trigger is
-  # tag push (maintainer-only), so no fork/PR code reaches the self-hosted runner.
-  # NOTE: when enabling this gate, switch vm-smoke.yml to workflow_dispatch-only
-  # to avoid a redundant second smoke run on the same tag.
+  # Required release gate. The tag trigger is maintainer-only, so no fork/PR code
+  # reaches the self-hosted runner.
   smoke-gate:
     name: Boot VM and Verify SSH (release gate)
     needs: guest-artifacts
-    if: ${{ vars.ENABLE_VM_SMOKE_GATE == 'true' }}
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     steps:
@@ -131,14 +126,32 @@ jobs:
           DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS: never
         run: nix run .#smoke-test
 
-      - name: Upload VM smoke logs
+      - name: Prepare sanitized VM smoke diagnostics
+        if: failure()
+        run: |
+          mkdir -p ci-artifacts/smoke-diagnostics
+          {
+            echo "VM smoke test failed. Inspect the self-hosted runner logs for details."
+            for log_name in console.log daemon.log; do
+              log_path="ci-artifacts/smoke-state/$log_name"
+              if [ -f "$log_path" ] && [ ! -L "$log_path" ]; then
+                byte_count=$(wc -c < "$log_path" | tr -d ' ')
+                printf '%s: present (%s bytes)\n' "$log_name" "$byte_count"
+              else
+                printf '%s: absent or unsafe file type\n' "$log_name"
+              fi
+            done
+          } > ci-artifacts/smoke-diagnostics/diagnostics.txt
+          chmod 0600 ci-artifacts/smoke-diagnostics/diagnostics.txt
+
+      - name: Upload sanitized VM smoke diagnostics
         if: failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: vm-smoke-logs
-          path: ci-artifacts/smoke-state
-          if-no-files-found: ignore
-          retention-days: 7
+          path: ci-artifacts/smoke-diagnostics
+          if-no-files-found: error
+          retention-days: 3
 
   release:
     name: Build and Release
@@ -146,7 +159,7 @@ jobs:
     if: >-
       ${{ always()
       && needs.guest-artifacts.result == 'success'
-      && (needs.smoke-gate.result == 'success' || needs.smoke-gate.result == 'skipped') }}
+      && needs.smoke-gate.result == 'success' }}
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -157,6 +170,21 @@ jobs:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify release commit is current main tip
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if [ "$(git rev-parse "$GITHUB_SHA^{commit}")" != "$(git rev-parse "origin/main^{commit}")" ]; then
+            echo "Release commit $GITHUB_SHA is not the current tip of origin/main." >&2
+            exit 1
+          fi
+
+      - name: Download guest artifact closure for release
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: guest-artifact-closure
+          path: ci-artifacts
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
@@ -201,12 +229,16 @@ jobs:
           mkdir -p dist
           cp result-darwin/bin/darwin-vz-nix dist/darwin-vz-nix-aarch64-darwin
           chmod 0755 dist/darwin-vz-nix-aarch64-darwin
+          test -s ci-artifacts/guest-artifacts.closure
+          test -s ci-artifacts/guest-artifacts.nar.zst
+          cp ci-artifacts/guest-artifacts.closure dist/guest-artifacts.closure
+          cp ci-artifacts/guest-artifacts.nar.zst dist/guest-artifacts.nar.zst
           (cd dist && shasum -a 256 darwin-vz-nix-aarch64-darwin > darwin-vz-nix-aarch64-darwin.sha256)
 
       - name: Generate build provenance attestation
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
-          subject-path: dist/darwin-vz-nix-aarch64-darwin
+          subject-path: dist/*
 
       - name: Push to Cachix
         if: env.CACHIX_AUTH_TOKEN_PRESENT == 'true'
@@ -219,3 +251,5 @@ jobs:
           files: |
             dist/darwin-vz-nix-aarch64-darwin
             dist/darwin-vz-nix-aarch64-darwin.sha256
+            dist/guest-artifacts.closure
+            dist/guest-artifacts.nar.zst

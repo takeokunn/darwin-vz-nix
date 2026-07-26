@@ -32,7 +32,8 @@ let package = Package(
             name: "darwin-vz-nix-tests",
             dependencies: [
                 .target(name: "DarwinVZNixLib"),
-            ]
+            ],
+            path: "Tests/darwin-vz-nix-tests"
         ),
     ],
     swiftLanguageModes: [.v5]

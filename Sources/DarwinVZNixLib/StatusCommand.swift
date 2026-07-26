@@ -7,6 +7,11 @@ struct VMStatusOutput: Codable {
     let stateDirectory: String
 }
 
+struct RuntimePIDFileGeneration: Equatable {
+    let device: dev_t
+    let inode: ino_t
+}
+
 public struct Status: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         abstract: "Show the status of the virtual machine"
@@ -24,15 +29,16 @@ public struct Status: AsyncParsableCommand {
         let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
         let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
-        let hasPIDFile = FileManager.default.fileExists(atPath: pidFileURL.path)
+        let observedGeneration = Status.pidFileGeneration(at: pidFileURL)
+        let hasPIDFile = observedGeneration != nil
         let record = VMManager.readPIDRecord(from: pidFileURL)
         let pid = record?.pid
         let isRunning = record.map {
             VMManager.isProcessRunning(pid: $0.pid)
-                && VMManager.processMatchesRecord(pid: $0.pid, expectedExecutablePath: $0.executablePath)
+                && VMManager.processMatchesRecord($0, pidFileURL: pidFileURL)
         } ?? false
         if (record != nil && !isRunning) || (record == nil && hasPIDFile) {
-            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory, observedGeneration: observedGeneration)
         }
 
         if json {
@@ -53,16 +59,30 @@ public struct Status: AsyncParsableCommand {
                 print("PID: \(pid)")
             } else {
                 print("VM Status: Stopped")
-                if pid != nil, !isRunning {
-                    try? FileManager.default.removeItem(at: pidFileURL)
-                }
             }
             print("State Directory: \(stateDirectory.path)")
         }
     }
 
-    static func cleanupStoppedRuntimeFiles(in stateDirectory: URL) {
-        try? FileManager.default.removeItem(at: stateDirectory.appendingPathComponent("vm.pid"))
+    static func pidFileGeneration(at url: URL) -> RuntimePIDFileGeneration? {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG else { return nil }
+        return RuntimePIDFileGeneration(device: metadata.st_dev, inode: metadata.st_ino)
+    }
+
+    @discardableResult
+    static func cleanupStoppedRuntimeFiles(
+        in stateDirectory: URL,
+        observedGeneration: RuntimePIDFileGeneration?,
+        beforeLock: (() -> Void)? = nil
+    ) -> Bool {
+        let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
+        beforeLock?()
+        guard let lockFD = try? SecureHostState.openAndLockStateDirectory(stateDirectory) else { return false }
+        defer { close(lockFD) }
+        guard pidFileGeneration(at: pidFileURL) == observedGeneration else { return false }
+        try? FileManager.default.removeItem(at: pidFileURL)
         try? FileManager.default.removeItem(at: stateDirectory.appendingPathComponent("guest-ip"))
+        return true
     }
 }

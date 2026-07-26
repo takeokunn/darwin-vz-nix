@@ -121,11 +121,29 @@ jobs:
           DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS: never
         run: nix run .#smoke-test
 
-      - name: Upload VM smoke logs
+      - name: Prepare sanitized VM smoke diagnostics
+        if: failure()
+        run: |
+          mkdir -p ci-artifacts/smoke-diagnostics
+          {
+            echo "VM smoke test failed. Inspect the self-hosted runner logs for details."
+            for log_name in console.log daemon.log; do
+              log_path="ci-artifacts/smoke-state/$log_name"
+              if [ -f "$log_path" ] && [ ! -L "$log_path" ]; then
+                byte_count=$(wc -c < "$log_path" | tr -d ' ')
+                printf '%s: present (%s bytes)\n' "$log_name" "$byte_count"
+              else
+                printf '%s: absent or unsafe file type\n' "$log_name"
+              fi
+            done
+          } > ci-artifacts/smoke-diagnostics/diagnostics.txt
+          chmod 0600 ci-artifacts/smoke-diagnostics/diagnostics.txt
+
+      - name: Upload sanitized VM smoke diagnostics
         if: failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: vm-smoke-logs
-          path: ci-artifacts/smoke-state
-          if-no-files-found: ignore
-          retention-days: 7
+          path: ci-artifacts/smoke-diagnostics
+          if-no-files-found: error
+          retention-days: 3

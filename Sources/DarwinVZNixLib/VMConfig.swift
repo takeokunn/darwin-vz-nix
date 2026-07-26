@@ -54,6 +54,7 @@ struct VMConfig {
     let rosetta: Bool
     let shareNixStore: Bool
     let idleTimeout: Int
+    let launchdManaged: Bool
 
     static let defaultStateDirectory: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -125,7 +126,8 @@ struct VMConfig {
         stateDirectory: URL? = nil,
         rosetta: Bool = true,
         shareNixStore: Bool = true,
-        idleTimeout: Int = 0
+        idleTimeout: Int = 0,
+        launchdManaged: Bool = false
     ) {
         self.cores = cores
         self.memory = memory
@@ -137,6 +139,7 @@ struct VMConfig {
         self.rosetta = rosetta
         self.shareNixStore = shareNixStore
         self.idleTimeout = idleTimeout
+        self.launchdManaged = launchdManaged
     }
 
     // MARK: - Computed Paths

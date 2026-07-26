@@ -18,9 +18,10 @@ public struct SSH: AsyncParsableCommand {
         let stateDirectory = stateDir.map { URL(fileURLWithPath: $0) } ?? VMConfig.defaultStateDirectory
         let pidFileURL = stateDirectory.appendingPathComponent("vm.pid")
 
+        let observedGeneration = Status.pidFileGeneration(at: pidFileURL)
         let record = VMManager.readPIDRecord(from: pidFileURL)
-        guard Self.recordedVMIsRunning(record) else {
-            Status.cleanupStoppedRuntimeFiles(in: stateDirectory)
+        guard Self.recordedVMIsRunning(record, pidFileURL: pidFileURL) else {
+            Status.cleanupStoppedRuntimeFiles(in: stateDirectory, observedGeneration: observedGeneration)
             // Not running is an operational state (exit 3), not a usage error (64).
             try exitOperational("No running VM found. Start a VM first with 'darwin-vz-nix start'.")
         }
@@ -29,15 +30,12 @@ public struct SSH: AsyncParsableCommand {
         try networkManager.connectSSH(extraArgs: extraArgs)
     }
 
-    static func recordedVMIsRunning(_ record: VMProcessRecord?) -> Bool {
+    static func recordedVMIsRunning(_ record: VMProcessRecord?, pidFileURL: URL) -> Bool {
         guard let record else {
             return false
         }
 
         return VMManager.isProcessRunning(pid: record.pid)
-            && VMManager.processMatchesRecord(
-                pid: record.pid,
-                expectedExecutablePath: record.executablePath
-            )
+            && VMManager.processMatchesRecord(record, pidFileURL: pidFileURL)
     }
 }

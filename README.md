@@ -1,11 +1,11 @@
 # darwin-vz-nix
 
-A Swift CLI tool and nix-darwin module that boots NixOS Linux VMs using macOS Virtualization.framework on Apple Silicon. A high-performance replacement for nix-darwin's QEMU-based `nix.linux-builder`.
+A Swift CLI tool and nix-darwin module that boots NixOS Linux VMs using macOS Virtualization.framework on Apple Silicon. It provides a reproducible benchmarking harness for comparing builder configurations without claiming universal performance results.
 
 ## Features
 
-- **Native Performance**: Direct Virtualization.framework integration — no QEMU, no vfkit
-- **Rosetta 2**: Execute x86_64-linux builds at ~70-90% native speed (vs ~10-17x slowdown with QEMU emulation)
+- **Native Virtualization**: Direct Virtualization.framework integration, with a reproducible measurement methodology documented in [BENCHMARKING.md](docs/BENCHMARKING.md)
+- **Rosetta 2**: Execute x86_64-linux builds with benchmark results reported only from the documented reproducible harness
 - **VirtioFS + Overlay**: Share host's `/nix/store` with the guest via overlayfs — avoid re-downloading derivations
 - **Auto SSH**: ED25519 keys auto-generated, DHCP-based guest IP discovery via NAT
 - **Idle Timeout**: Automatically shut down VM after configurable idle period
@@ -377,6 +377,9 @@ for inspection after the run. Set `DARWIN_VZ_NIX_SMOKE_TMPDIR` to choose the
 parent directory used for temporary smoke-test state. Set
 `DARWIN_VZ_NIX_SMOKE_BUILD_ARTIFACTS=never` to skip artifact building and fail
 fast unless `DARWIN_VZ_NIX_ARTIFACT_DIR` already contains valid result links.
+When neither `DARWIN_VZ_NIX_SMOKE_TMPDIR` nor `TMPDIR` is set, the smoke test
+uses a private directory below `~/Library/Caches/darwin-vz-nix` rather than the
+shared `/tmp` directory.
 
 ## CI/CD
 
@@ -384,12 +387,15 @@ GitHub Actions runs on every PR and push to `main`:
 
 - **macOS checks** run `nix flake check --system aarch64-darwin`, covering the Swift package, Swift tests, formatting, and nix-darwin module evaluation
 - **Linux guest artifact builds** run `nix run .#build-guest-artifacts` on the `aarch64-linux` runner for PRs and `main`, verifying the kernel `Image`, initrd, system `init`, and bundled guest artifacts through the same command users run locally
-- **VM smoke tests** run through the separate `VM Smoke Test` workflow on a self-hosted physical Apple Silicon macOS runner. GitHub-hosted macOS runners are not used for VM boot validation because they are already virtualized and do not reliably support this end-to-end Virtualization.framework test. Failed smoke runs upload the preserved VM state directory as a short-lived log artifact.
+- **VM smoke tests** run through the separate `VM Smoke Test` workflow on a self-hosted physical Apple Silicon macOS runner. GitHub-hosted macOS runners are not used for VM boot validation because they are already virtualized and do not reliably support this end-to-end Virtualization.framework test. Failed smoke runs upload only a short-lived sanitized diagnostics artifact; the VM state directory remains on the trusted self-hosted runner and is never uploaded.
 - Pushes to [Cachix](https://app.cachix.org/cache/takeokunn-darwin-vz-nix) binary cache (`takeokunn-darwin-vz-nix`) on pushes to `main` and version tags
 
 Before merging changes that affect boot, networking, SSH, or guest artifacts,
 run `nix run .#smoke-test` locally on Apple Silicon macOS or dispatch the
 `VM Smoke Test` workflow on a self-hosted runner.
+
+For reproducible performance measurements and reporting guidance, see
+[docs/BENCHMARKING.md](docs/BENCHMARKING.md).
 
 ## Security
 

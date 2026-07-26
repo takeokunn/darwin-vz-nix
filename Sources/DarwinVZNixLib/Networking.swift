@@ -5,6 +5,7 @@ enum NetworkError: LocalizedError {
     case sshConnectionFailed(Int32)
     case sshKeyNotFound(String)
     case guestIPNotFound
+    case unsafeSSHKeyPath(String)
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +24,8 @@ enum NetworkError: LocalizedError {
               3. The VM finished booting but its network interface is not up yet
             Run `darwin-vz-nix doctor` for host-side diagnostics.
             """
+        case let .unsafeSSHKeyPath(path):
+            "Refusing to use a symlink or non-regular SSH key file at: \(path)"
         }
     }
 }
@@ -65,7 +68,7 @@ struct NetworkManager {
         return process.terminationStatus == 0
     }
 
-    func ensureSSHKeys() throws {
+    func ensureSSHKeys(beforePublicKeyInstall: (() throws -> Void)? = nil) throws {
         let sshDir = VMConfig.sshDirectory(for: stateDirectory)
         let publicKeyPath = URL(fileURLWithPath: sshKeyPath.path + ".pub")
         let fm = FileManager.default
@@ -77,26 +80,35 @@ struct NetworkManager {
         )
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sshDir.path)
 
-        let hasPrivateKey = fm.fileExists(atPath: sshKeyPath.path)
-        let hasPublicKey = fm.fileExists(atPath: publicKeyPath.path)
-
-        if hasPrivateKey, hasPublicKey {
-            try setSSHKeyPermissions(publicKeyPath: publicKeyPath)
-            return
-        }
+        let hasPrivateKey = try regularFileExists(at: sshKeyPath)
+        let hasPublicKey = try regularFileExists(at: publicKeyPath)
 
         if hasPrivateKey {
+            let publicKey = try derivePublicKey()
+            let temporaryPublicKey = sshDir.appendingPathComponent(".id_ed25519.pub.\(UUID().uuidString)")
+            defer { try? fm.removeItem(at: temporaryPublicKey) }
+            let data = Data("\(publicKey) builder@darwin-vz-nix\n".utf8)
+            let fd = open(temporaryPublicKey.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
+            guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
             do {
-                let publicKey = try derivePublicKey()
-                try "\(publicKey) builder@darwin-vz-nix\n".write(to: publicKeyPath, atomically: true, encoding: .utf8)
-                try setSSHKeyPermissions(publicKeyPath: publicKeyPath)
-                return
+                defer { close(fd) }
+                try Self.writeAll(data, to: fd)
+                guard fsync(fd) == 0, fchmod(fd, 0o644) == 0 else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
             } catch {
-                try? fm.removeItem(at: sshKeyPath)
-                try? fm.removeItem(at: publicKeyPath)
+                throw error
             }
+            try beforePublicKeyInstall?()
+            guard rename(temporaryPublicKey.path, publicKeyPath.path) == 0 else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try setSSHKeyPermissions(publicKeyPath: publicKeyPath)
+            return
         } else if hasPublicKey {
-            try? fm.removeItem(at: publicKeyPath)
+            guard unlink(publicKeyPath.path) == 0 else {
+                throw CocoaError(.fileWriteUnknown)
+            }
         }
 
         try generateSSHKeyPair()
@@ -151,8 +163,31 @@ struct NetworkManager {
     }
 
     private func setSSHKeyPermissions(publicKeyPath: URL) throws {
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sshKeyPath.path)
-        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: publicKeyPath.path)
+        try setRegularFilePermissions(at: sshKeyPath, mode: 0o600)
+        try setRegularFilePermissions(at: publicKeyPath, mode: 0o644)
+    }
+
+    private func regularFileExists(at url: URL) throws -> Bool {
+        var info = stat()
+        if lstat(url.path, &info) != 0 {
+            if errno == ENOENT { return false }
+            throw CocoaError(.fileReadUnknown)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw NetworkError.unsafeSSHKeyPath(url.path)
+        }
+        return true
+    }
+
+    private func setRegularFilePermissions(at url: URL, mode: mode_t) throws {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw NetworkError.unsafeSSHKeyPath(url.path) }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw NetworkError.unsafeSSHKeyPath(url.path)
+        }
+        guard fchmod(fd, mode) == 0 else { throw CocoaError(.fileWriteUnknown) }
     }
 
     // MARK: - Guest IP Discovery
@@ -163,35 +198,37 @@ struct NetworkManager {
     func discoverGuestIP(hostname: String = Constants.guestHostname, timeout: TimeInterval = 120, notBefore: Date) async throws -> String {
         let leaseFile = "/var/db/dhcpd_leases"
         let deadline = Date().addingTimeInterval(timeout)
-        let notBeforeTimestamp = UInt64(notBefore.timeIntervalSince1970)
         let mac = macAddress
 
         var consecutiveLeaseMisses = 0
         var pollMilliseconds = 500
+        var cachedLeaseModification: Date?
+        var cachedLeaseIP: String?
 
         while Date() < deadline {
-            // Primary path: DHCP lease bound to our hostname, cross-checked against
-            // our per-instance MAC. Preferred whenever bootpd answered.
-            if let ip = parseLeaseFile(path: leaseFile, hostname: hostname, notBefore: notBeforeTimestamp),
-               Self.isValidIPv4(ip),
-               Self.verifyIPViaARP(ip: ip, expectedMAC: mac)
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: leaseFile),
+               let modification = attributes[.modificationDate] as? Date,
+               modification >= notBefore,
+               modification != cachedLeaseModification
             {
-                return ip
+                cachedLeaseModification = modification
+                cachedLeaseIP = parseLeaseFile(
+                    path: leaseFile,
+                    hostname: hostname,
+                    unexpiredAt: UInt64(Date().timeIntervalSince1970)
+                )
             }
 
-            consecutiveLeaseMisses += 1
-
-            // Fallback: ARP sweep by our MAC. Recovers when bootpd never wrote a
-            // lease (firewall / stuck launchd) but the guest still reached the host
-            // via ARP. Gated behind several lease misses AND a TCP/22 liveness probe
-            // so a *stale* ARP entry from a prior boot can't yield a dead/wrong IP.
-            if consecutiveLeaseMisses >= 3,
-               let ip = Self.scanARPTableForMAC(mac),
+            // One ARP snapshot is shared by both paths for this iteration.
+            let arpIP = Self.readARPTable().flatMap { Self.scanARPTableForMAC($0, expectedMAC: mac) }
+            let leaseCandidate = cachedLeaseIP.flatMap { $0 == arpIP ? $0 : nil }
+            let fallbackCandidate = consecutiveLeaseMisses >= 2 ? arpIP : nil
+            if let ip = leaseCandidate ?? fallbackCandidate,
                Self.isValidIPv4(ip),
                Self.isTCPPortOpen(ip: ip, port: 22)
-            {
-                return ip
-            }
+            { return ip }
+
+            consecutiveLeaseMisses += 1
 
             try await Task.sleep(for: .milliseconds(pollMilliseconds))
             // Linear backoff (cap 2s) to avoid spawning ~240 arp/nc subprocesses.
@@ -203,7 +240,7 @@ struct NetworkManager {
 
     /// Parse macOS DHCP lease content for a matching hostname.
     /// This is separated from file I/O to enable unit testing.
-    static func parseLeaseContent(_ content: String, hostname: String, notBefore: UInt64) -> String? {
+    static func parseLeaseContent(_ content: String, hostname: String, unexpiredAt: UInt64) -> String? {
         var newestTimestamp: UInt64 = 0
         var newestIP: String?
 
@@ -230,7 +267,9 @@ struct NetworkManager {
                 }
             }
 
-            if name == hostname, let ip = ipAddress, leaseTimestamp > notBefore, leaseTimestamp >= newestTimestamp {
+            if name == hostname, let ip = ipAddress,
+               leaseTimestamp > unexpiredAt, leaseTimestamp >= newestTimestamp
+            {
                 newestTimestamp = leaseTimestamp
                 newestIP = ip
             }
@@ -319,6 +358,10 @@ struct NetworkManager {
     /// Shell out to `arp -an` and search the table for our MAC.
     /// Returns nil on process failure or no match.
     static func scanARPTableForMAC(_ expectedMAC: String) -> String? {
+        readARPTable().flatMap { scanARPTableForMAC($0, expectedMAC: expectedMAC) }
+    }
+
+    private static func readARPTable() -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
         process.arguments = ["-an"]
@@ -336,14 +379,15 @@ struct NetworkManager {
         // would deadlock IP discovery (see derivePublicKey).
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         process.waitUntilExit()
-        return scanARPTableForMAC(output, expectedMAC: expectedMAC)
+        guard process.terminationStatus == 0 else { return nil }
+        return output
     }
 
-    private func parseLeaseFile(path: String, hostname: String, notBefore: UInt64) -> String? {
+    private func parseLeaseFile(path: String, hostname: String, unexpiredAt: UInt64) -> String? {
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
             return nil
         }
-        return NetworkManager.parseLeaseContent(content, hostname: hostname, notBefore: notBefore)
+        return NetworkManager.parseLeaseContent(content, hostname: hostname, unexpiredAt: unexpiredAt)
     }
 
     /// Read previously saved guest IP from the state directory.
@@ -386,28 +430,89 @@ struct NetworkManager {
     /// Remove any known_hosts entry keyed by `host` (an IP address or a literal
     /// ssh_config `Host` alias). Best-effort: a missing file or ssh-keygen
     /// failure is non-fatal.
-    static func removeKnownHostEntry(host: String, knownHostsURL: URL) {
-        // Refuse to operate on a symlink. `scrubUserKnownHosts` runs this as the
-        // root/launchd daemon against a file inside an unprivileged user's
-        // `~/.ssh`; `ssh-keygen -R` follows symlinks, so a link swapped in for
-        // the file would make root rewrite whatever it points at (e.g.
-        // /etc/sudoers). Open O_NOFOLLOW — which fails with ELOOP on a symlink —
-        // and require a regular file. A missing file is silently skipped.
-        let fd = open(knownHostsURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return }
-        var st = stat()
-        let isRegularFile = fstat(fd, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
-        close(fd)
-        guard isRegularFile else { return }
+    @discardableResult
+    static func removeKnownHostEntry(
+        host: String,
+        knownHostsURL: URL,
+        afterOpen: (() -> Void)? = nil
+    ) -> Bool {
+        let parentURL = knownHostsURL.deletingLastPathComponent()
+        let leaf = knownHostsURL.lastPathComponent
+        guard !leaf.isEmpty, !leaf.contains("/") else { return false }
+        let directoryFD = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else { return false }
+        defer { close(directoryFD) }
+        let fd = leaf.withCString { openat(directoryFD, $0, O_RDWR | O_NOFOLLOW | O_CLOEXEC) }
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var originalInfo = stat()
+        guard fstat(fd, &originalInfo) == 0, (originalInfo.st_mode & S_IFMT) == S_IFREG else {
+            return false
+        }
+        guard flock(fd, LOCK_EX) == 0 else { return false }
+        defer { flock(fd, LOCK_UN) }
+
+        guard lseek(fd, 0, SEEK_SET) >= 0,
+              let originalData = try? FileHandle(fileDescriptor: fd, closeOnDealloc: false).readToEnd()
+        else { return false }
+
+        // ssh-keygen gets a private copy, so its path-based rewrite and `.old`
+        // backup can never touch or leak into the untrusted source directory.
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darwin-vz-nix-known-hosts.\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: temporaryDirectory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch { return false }
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let temporaryKnownHosts = temporaryDirectory.appendingPathComponent("known_hosts")
+        do { try originalData.write(to: temporaryKnownHosts, options: .withoutOverwriting) } catch { return false }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
-        process.arguments = ["-R", host, "-f", knownHostsURL.path]
+        process.arguments = ["-R", host, "-f", temporaryKnownHosts.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        // Only wait if the launch succeeded: waitUntilExit() on a process that
-        // never launched is undefined (NSTask may raise).
-        guard (try? process.run()) != nil else { return }
+        guard (try? process.run()) != nil else { return false }
         process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let scrubbedData = try? Data(contentsOf: temporaryKnownHosts)
+        else { return false }
+
+        afterOpen?()
+        var currentInfo = stat()
+        let pathStillNamesOriginal = leaf.withCString {
+            fstatat(directoryFD, $0, &currentInfo, AT_SYMLINK_NOFOLLOW) == 0
+        }
+        guard pathStillNamesOriginal,
+              currentInfo.st_dev == originalInfo.st_dev,
+              currentInfo.st_ino == originalInfo.st_ino
+        else { return false }
+
+        guard ftruncate(fd, 0) == 0, lseek(fd, 0, SEEK_SET) >= 0 else { return false }
+        do {
+            try writeAll(scrubbedData, to: fd)
+            return fsync(fd) == 0
+        } catch {
+            return false
+        }
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var offset = 0
+            while offset < rawBuffer.count {
+                let count = write(fd, base.advanced(by: offset), rawBuffer.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw CocoaError(.fileWriteUnknown) }
+                offset += count
+            }
+        }
     }
 
     /// Remove any stale host-key entry for `ip` from the known_hosts file so a
@@ -423,7 +528,11 @@ struct NetworkManager {
     /// registers for the guest.
     private static let sshAlias = "darwin-vz-nix"
 
-    /// Evict stale `darwin-vz-nix_known_hosts` entries for both the current
+    /// Stable identity used by the state-local SSH client. The DHCP address may
+    /// change between boots, but the VM host key must remain pinned.
+    static let stateSSHHostKeyAlias = "darwin-vz-nix-state"
+
+    /// Evict `darwin-vz-nix_known_hosts` entries for both the current
     /// process's own user and the logged-in macOS console user.
     ///
     /// The darwin-module points plain `ssh darwin-vz-nix` (interactive users)
@@ -431,18 +540,13 @@ struct NetworkManager {
     /// `~/.ssh/darwin-vz-nix_known_hosts`, connecting via the `Host
     /// darwin-vz-nix` alias through a `ProxyCommand` — so ssh has no
     /// hostname/IP of its own to resolve and records the entry under the
-    /// literal alias name, not the guest IP. `scrubKnownHost(ip:)` above (used
-    /// by `start` to evict the state-directory pin for the freshly discovered
-    /// IP) can't evict that: it validates its argument as an IPv4 address and
+    /// literal alias name, not the guest IP. `scrubKnownHost(ip:)` validates
+    /// its argument as an IPv4 address and
     /// would reject the alias outright. Without this, a guest whose host key
     /// changes hard-fails every SSH path outside the `ssh` subcommand.
     ///
-    /// Because `start` runs as the root/launchd daemon, scrubbing the console
-    /// user's file leaves both the rewritten known_hosts and the `.old` backup
-    /// `ssh-keygen -R` drops root-owned — which breaks the user's plain `ssh
-    /// darwin-vz-nix` (it can no longer append the new host key). So the
-    /// console-user branch chowns the file back to that user and deletes the
-    /// root-owned `.old` sibling afterward.
+    /// Because `destroy` can run as the root/launchd daemon, the console-user
+    /// branch restores ownership after the descriptor-based rewrite.
     /// Best-effort: a failed lookup or missing file is silently skipped.
     static func scrubUserKnownHosts() {
         let knownHostsSuffix = ".ssh/darwin-vz-nix_known_hosts"
@@ -480,17 +584,10 @@ struct NetworkManager {
     }
 
     /// Restore ownership of a foreign (console-user) known_hosts file to
-    /// `consoleUser` after a root scrub, and delete the root-owned `.old`
-    /// backup `ssh-keygen -R` leaves behind. Without this the user's plain
+    /// `consoleUser` after a root scrub. Without this the user's plain
     /// `ssh darwin-vz-nix` can't append the new host key (the file flips to
     /// root:wheel 0600). Best-effort: any failure must not crash `start`.
     private static func restoreConsoleUserOwnership(of knownHostsURL: URL, to consoleUser: String) {
-        // ssh-keygen -R rewrites in place and leaves a "<file>.old" backup; both
-        // become root-owned when the scrub runs as the daemon. Drop the backup
-        // so it can't linger root-owned.
-        let backupURL = URL(fileURLWithPath: knownHostsURL.path + ".old")
-        try? FileManager.default.removeItem(at: backupURL)
-
         // chown WITHOUT following symlinks. `setAttributes(ofItemAtPath:)` uses
         // path-based chown(), which follows a symlink — so a link swapped into
         // the user-owned `~/.ssh` between check and chown would redirect the
@@ -509,36 +606,62 @@ struct NetworkManager {
     }
 
     /// The known_hosts file the `darwin-vz-nix ssh` subcommand pins guest host
-    /// keys into. Scrubbed once per VM boot (see `scrubStateKnownHosts`), NOT
-    /// per connection — per-connection scrubbing would delete the pin right
-    /// before every handshake and reduce `accept-new` to "accept anything",
-    /// giving an on-segment MITM a fresh first-connection window every time.
+    /// keys into. Pins survive normal restarts and are removed only by destroy.
     func stateKnownHostsURL() -> URL {
         stateDirectory.appendingPathComponent("ssh/known_hosts")
     }
 
-    /// Evict the state-directory known_hosts entry for `ip`. Called by `start`
-    /// right after IP discovery: a recreated guest disk (new host key) or a NAT
-    /// IP handed to a different VM would otherwise hard-fail every later `ssh`
-    /// with "REMOTE HOST IDENTIFICATION HAS CHANGED". Connections within one
-    /// boot then keep full host-key verification against the re-pinned key.
-    func scrubStateKnownHosts(ip: String) {
-        Self.scrubKnownHost(ip: ip, knownHostsURL: stateKnownHostsURL())
+    /// Evict the state-directory pin during explicit destruction/recreation of
+    /// the VM identity.
+    func scrubStateKnownHosts() {
+        Self.removeKnownHostEntry(
+            host: Self.stateSSHHostKeyAlias,
+            knownHostsURL: stateKnownHostsURL()
+        )
     }
 
     func connectSSH(extraArgs: [String] = []) throws {
+        let arguments = try sshArguments(extraArgs: extraArgs)
+
+        // Use execv to replace the current process with ssh.
+        // Process() doesn't transfer terminal control to the child,
+        // which prevents the login shell from starting interactively.
+        let allocatedArgs = arguments.map { strdup($0) }
+        let cArgs = allocatedArgs + [nil]
+        execv("/usr/bin/ssh", cArgs)
+
+        // execv only returns on failure
+        let execError = errno
+        allocatedArgs.forEach { free($0) }
+        throw NetworkError.sshConnectionFailed(execError)
+    }
+
+    static func knownHostsContainsEntry(host: String, at url: URL) -> Bool {
+        knownHostsEntries(at: url).contains { line in
+            guard let hosts = line.split(whereSeparator: { $0.isWhitespace }).first else { return false }
+            return hosts.split(separator: ",").contains(Substring(host))
+        }
+    }
+
+    func sshArguments(extraArgs: [String] = []) throws -> [String] {
         guard FileManager.default.fileExists(atPath: sshKeyPath.path) else {
             throw NetworkError.sshKeyNotFound(sshKeyPath.path)
         }
 
         let guestIP = try readGuestIP()
         let knownHostsURL = stateKnownHostsURL()
+        let checkingMode = Self.knownHostsContainsEntry(
+            host: Self.stateSSHHostKeyAlias,
+            at: knownHostsURL
+        ) ? "yes" : "accept-new"
 
         var arguments = [
             "/usr/bin/ssh",
             "-i", sshKeyPath.path,
-            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "StrictHostKeyChecking=\(checkingMode)",
             "-o", "UserKnownHostsFile=\(knownHostsURL.path)",
+            "-o", "HostKeyAlias=\(Self.stateSSHHostKeyAlias)",
+            "-o", "HashKnownHosts=no",
             "-o", "LogLevel=ERROR",
         ]
 
@@ -552,14 +675,21 @@ struct NetworkManager {
 
         arguments.append("builder@\(guestIP)")
         arguments += extraArgs
+        return arguments
+    }
 
-        // Use execv to replace the current process with ssh.
-        // Process() doesn't transfer terminal control to the child,
-        // which prevents the login shell from starting interactively.
-        let cArgs = arguments.map { strdup($0) } + [nil]
-        execv("/usr/bin/ssh", cArgs)
-
-        // execv only returns on failure
-        throw NetworkError.sshConnectionFailed(errno)
+    private static func knownHostsEntries(at url: URL) -> [Substring] {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return [] }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              let data = try? FileHandle(fileDescriptor: fd, closeOnDealloc: false).readToEnd(),
+              let content = String(data: data, encoding: .utf8)
+        else { return [] }
+        return content.split(whereSeparator: { $0.isNewline }).filter {
+            !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#")
+                && !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }
     }
 }
