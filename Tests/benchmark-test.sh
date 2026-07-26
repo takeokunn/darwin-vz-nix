@@ -94,6 +94,14 @@ printf 'test-hardware\n'
 EOF
 chmod +x "$TMP/bin/"*
 
+perl -0777 -e '
+  local $/;
+  my $script = <>;
+  die "benchmark timing still imports the wall clock\n" if $script =~ /Time::HiRes=time/;
+  my $count = () = $script =~ /clock_gettime\(CLOCK_MONOTONIC\)/g;
+  die "expected 7 monotonic clock reads, got $count\n" unless $count == 7;
+' "$ROOT/scripts/benchmark.sh"
+
 start=$(perl -MTime::HiRes=time -e 'print time')
 PATH="$TMP/bin:$PATH" DARWIN_VZ_NIX_BENCHMARK_ALLOW_VM=1 \
   DARWIN_VZ_NIX_BENCHMARK_TMPDIR="$TMP" \

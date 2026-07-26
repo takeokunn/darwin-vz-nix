@@ -103,7 +103,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 : > "$SAMPLES"
 
-now() { perl -MTime::HiRes=time -e 'printf "%.6f\n", time'; }
+now() { perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.6f\n", clock_gettime(CLOCK_MONOTONIC)'; }
 elapsed() { perl -e 'printf "%.6f\n", $ARGV[1] - $ARGV[0]' "$1" "$2"; }
 record() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$SAMPLES"; }
 shell_quote() {
@@ -113,9 +113,9 @@ shell_quote() {
 }
 wait_pid_until() {
   wait_pid=$1 wait_limit=$2
-  wait_deadline=$(perl -MTime::HiRes=time -e 'printf "%.6f\n", time + $ARGV[0]' "$wait_limit")
+  wait_deadline=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.6f\n", clock_gettime(CLOCK_MONOTONIC) + $ARGV[0]' "$wait_limit")
   while kill -0 "$wait_pid" 2>/dev/null; do
-    perl -MTime::HiRes=time -e 'exit(time < $ARGV[0] ? 0 : 1)' "$wait_deadline" || return 1
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'exit(clock_gettime(CLOCK_MONOTONIC) < $ARGV[0] ? 0 : 1)' "$wait_deadline" || return 1
     sleep 1
   done
   wait "$wait_pid" 2>/dev/null
@@ -130,7 +130,7 @@ terminate_and_wait() {
 }
 wait_state_unlock() {
   lock_path=$STATE_DIR/vm.lock
-  unlock_deadline=$(perl -MTime::HiRes=time -e 'printf "%.6f\n", time + $ARGV[0]' "$TIMEOUT")
+  unlock_deadline=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.6f\n", clock_gettime(CLOCK_MONOTONIC) + $ARGV[0]' "$TIMEOUT")
   while [ -e "$lock_path" ]; do
     if perl -MFcntl=:flock -e '
       open my $fh, "+<", $ARGV[0] or exit 1;
@@ -138,12 +138,12 @@ wait_state_unlock() {
     ' "$lock_path"; then
       return 0
     fi
-    perl -MTime::HiRes=time -e 'exit(time < $ARGV[0] ? 0 : 1)' "$unlock_deadline" || return 1
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'exit(clock_gettime(CLOCK_MONOTONIC) < $ARGV[0] ? 0 : 1)' "$unlock_deadline" || return 1
     sleep 1
   done
 }
 wait_ssh() {
-  deadline=$(perl -MTime::HiRes=time -e 'printf "%.6f\n", time + $ARGV[0]' "$TIMEOUT")
+  deadline=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.6f\n", clock_gettime(CLOCK_MONOTONIC) + $ARGV[0]' "$TIMEOUT")
   while :; do
     if "$CLI" ssh --state-dir "$STATE_DIR" -- -o BatchMode=yes -- true >/dev/null 2>&1; then return 0; fi
     if [ -f "$START_STATUS" ]; then
@@ -157,7 +157,7 @@ wait_ssh() {
       fi
       return 1
     fi
-    perl -MTime::HiRes=time -e 'exit(time < $ARGV[0] ? 0 : 1)' "$deadline" || return 1
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'exit(clock_gettime(CLOCK_MONOTONIC) < $ARGV[0] ? 0 : 1)' "$deadline" || return 1
     sleep 1
   done
 }
